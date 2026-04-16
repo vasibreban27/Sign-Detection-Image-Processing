@@ -445,10 +445,10 @@ bool touchesImageBorder(const Rect& box, const Mat& img)
 
 bool isValidCandidate(Rect box, double area, const Mat& img)
 {
-	if (area < 400)
+	if (area < 700)
 		return false;
 
-	if (box.width < 20 || box.height < 20)
+	if (box.width < 28 || box.height < 28)
 		return false;
 
 	double ratio = (double)box.width / (double)box.height;
@@ -467,23 +467,51 @@ std::string getShapeName(int corners, double area, double perimeter)
 	if (perimeter > 0)
 		circularity = 4.0 * CV_PI * area / (perimeter * perimeter);
 
-	// triunghi clar
 	if (corners == 3)
 		return "Triunghi";
 
-	// patrulater clar
 	if (corners == 4)
 		return "Patrulater";
 
-	// octogon clar
 	if (corners == 7 || corners == 8)
 		return "Octogon";
 
-	// cerc doar daca e foarte circular si nu are putine colturi
-	if (circularity > 0.86 && corners > 8)
+	// cerc doar daca este foarte circular si nu seamana cu poligoane simple
+	if (circularity > 0.88 && corners > 8)
 		return "Cerc";
 
 	return "Forma necunoscuta";
+}
+
+bool hasWhiteHorizontalBar(const Mat& hsv, const Rect& box)
+{
+	Rect safeBox = box & Rect(0, 0, hsv.cols, hsv.rows);
+	if (safeBox.width <= 0 || safeBox.height <= 0)
+		return false;
+
+	Mat roi = hsv(safeBox);
+
+	// masca pentru alb
+	Mat maskWhite;
+	inRange(roi, Scalar(0, 0, 180), Scalar(180, 70, 255), maskWhite);
+
+	// luam doar banda centrala orizontala
+	int y1 = roi.rows / 3;
+	int y2 = 2 * roi.rows / 3;
+	Rect centerBand(0, y1, roi.cols, y2 - y1);
+
+	Mat whiteBand = maskWhite(centerBand);
+
+	int whitePixels = countNonZero(whiteBand);
+	int totalPixels = centerBand.width * centerBand.height;
+
+	if (totalPixels == 0)
+		return false;
+
+	double whiteRatio = (double)whitePixels / (double)totalPixels;
+
+	// daca exista suficient alb pe banda centrala, consideram ca are bara alba
+	return whiteRatio > 0.25;
 }
 
 void testTrafficSignShapeDetection() {
@@ -725,21 +753,26 @@ std::string recognizeTrafficSign(
 	const std::string& colorName,
 	const Mat& hsv,
 	const Rect& box,
-	double area)
+	double area,
+	int corners)
 {
 	double ratio = (double)box.width / (double)box.height;
 	double rectArea = (double)box.width * (double)box.height;
 	double fillRatio = area / rectArea;
 
-	// Cedeaza = DOAR rosu + triunghi
-	if (shapeName == "Triunghi" && colorName == "Rosu")
+	// Cedeaza = rosu + triunghi
+	if (colorName == "Rosu" && corners == 3)
 		return "Cedeaza";
 
-	// STOP = DOAR rosu + octogon
-	if (shapeName == "Octogon" && colorName == "Rosu" && isLikelyStopSign(box, area))
+	// Interzis intrarea = semn rosu cu bara alba centrala
+	if (colorName == "Rosu" && hasWhiteHorizontalBar(hsv, box))
+		return "Interzis intrarea";
+
+	// STOP = rosu + 7/8 colturi + fara bara alba
+	if (colorName == "Rosu" && (corners == 7 || corners == 8) && isLikelyStopSign(box, area))
 		return "STOP";
 
-	// Semne circulare rosii = DOAR cerc + rosu
+	// Semne circulare rosii
 	if (shapeName == "Cerc" && colorName == "Rosu")
 	{
 		if (ratio > 0.75 && ratio < 1.25 && fillRatio > 0.45)
@@ -748,19 +781,19 @@ std::string recognizeTrafficSign(
 		return "Necunoscut";
 	}
 
-	// Drum cu prioritate = DOAR galben + patrulater
-	if (shapeName == "Patrulater" && colorName == "Galben")
+	// Drum cu prioritate
+	if (colorName == "Galben" && corners == 4)
 	{
 		if (ratio > 0.6 && ratio < 1.4)
 			return "Drum cu prioritate";
 	}
 
-	// Obligatoriu inainte = DOAR albastru + cerc
+	// Obligatoriu inainte
 	if (shapeName == "Cerc" && colorName == "Albastru")
 		return "Obligatoriu inainte";
 
-	// Sens unic = DOAR albastru + patrulater + dimensiune mica de semn
-	if (shapeName == "Patrulater" && colorName == "Albastru")
+	// Sens unic
+	if (colorName == "Albastru" && corners == 4)
 	{
 		if (box.width < 120 && box.height < 120)
 			return "Sens unic";
@@ -795,6 +828,7 @@ void detectAndRecognizeCandidates(
 			continue;
 
 		std::string shapeName = "Forma necunoscuta";
+		int bestCorners = 0;
 
 		for (double eps : {0.02, 0.03, 0.04, 0.05})
 		{
@@ -805,6 +839,7 @@ void detectAndRecognizeCandidates(
 			if (corners == 3 || corners == 4 || corners == 7 || corners == 8)
 			{
 				shapeName = getShapeName(corners, area, perimeter);
+				bestCorners = corners;
 				if (shapeName != "Forma necunoscuta")
 					break;
 			}
@@ -814,7 +849,8 @@ void detectAndRecognizeCandidates(
 		{
 			std::vector<Point> approx;
 			approxPolyDP(contours[i], approx, 0.02 * perimeter, true);
-			shapeName = getShapeName((int)approx.size(), area, perimeter);
+			bestCorners = (int)approx.size();
+			shapeName = getShapeName(bestCorners, area, perimeter);
 		}
 
 		if (shapeName == "Forma necunoscuta")
@@ -823,7 +859,13 @@ void detectAndRecognizeCandidates(
 		std::vector<Point> approxFinal;
 		approxPolyDP(contours[i], approxFinal, 0.02 * perimeter, true);
 
-		std::string signName = recognizeTrafficSign(shapeName, colorName, hsv, box, area);
+		std::string signName = recognizeTrafficSign(
+			shapeName,
+			colorName,
+			hsv,
+			box,
+			area,
+			bestCorners);
 
 		if (signName == "Necunoscut")
 			continue;
