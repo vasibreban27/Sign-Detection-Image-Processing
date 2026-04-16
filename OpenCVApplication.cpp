@@ -493,7 +493,7 @@ bool hasWhiteHorizontalBar(const Mat& hsv, const Rect& box)
 
 	// masca pentru alb
 	Mat maskWhite;
-	inRange(roi, Scalar(0, 0, 180), Scalar(180, 70, 255), maskWhite);
+	inRange(roi, Scalar(0, 0, 220), Scalar(180, 40, 255), maskWhite);
 
 	// luam doar banda centrala orizontala
 	int y1 = roi.rows / 3;
