@@ -1,0 +1,15 @@
+.vs/
+x64/
+Debug/
+Release/
+OpenCV/dll/
+*.dll
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.ipch
+*.sdf
+*.opensdf
+*.user
+*.db
