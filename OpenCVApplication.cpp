@@ -445,16 +445,14 @@ bool touchesImageBorder(const Rect& box, const Mat& img)
 
 bool isValidCandidate(Rect box, double area, const Mat& img)
 {
-	if (area < 150)
+	if (area < 400)
 		return false;
 
-	if (box.width < 12 || box.height < 12)
+	if (box.width < 20 || box.height < 20)
 		return false;
 
 	double ratio = (double)box.width / (double)box.height;
-
-	// mai permisiv pentru semne mici / indepartate
-	if (ratio < 0.5 || ratio > 1.5)
+	if (ratio < 0.4 || ratio > 2.0)
 		return false;
 
 	if (touchesImageBorder(box, img))
@@ -467,22 +465,22 @@ std::string getShapeName(int corners, double area, double perimeter)
 {
 	double circularity = 0.0;
 	if (perimeter > 0)
-		circularity = 4.0 * PI * area / (perimeter * perimeter);
+		circularity = 4.0 * CV_PI * area / (perimeter * perimeter);
 
-	// verific daca seamana cu cerc
-	if (circularity > 0.82)
-		return "Cerc";
-
+	// triunghi clar
 	if (corners == 3)
 		return "Triunghi";
 
+	// patrulater clar
 	if (corners == 4)
 		return "Patrulater";
 
-	if (corners == 8)
+	// octogon clar
+	if (corners == 7 || corners == 8)
 		return "Octogon";
 
-	if (corners > 8)
+	// cerc doar daca e foarte circular si nu are putine colturi
+	if (circularity > 0.86 && corners > 8)
 		return "Cerc";
 
 	return "Forma necunoscuta";
@@ -700,7 +698,8 @@ double getBlueRatioInBox(const Mat& hsv, const Rect& box)
 	Mat roi = hsv(safeBox);
 
 	Mat maskBlue;
-	inRange(roi, Scalar(100, 100, 60), Scalar(130, 255, 255), maskBlue);
+	// prag mai larg pentru albastru interior
+	inRange(roi, Scalar(95, 60, 40), Scalar(135, 255, 255), maskBlue);
 
 	int bluePixels = countNonZero(maskBlue);
 	int totalPixels = safeBox.width * safeBox.height;
@@ -715,39 +714,68 @@ std::string recognizeRedCircularSign(const Mat& hsv, const Rect& box)
 {
 	double blueRatio = getBlueRatioInBox(hsv, box);
 
-	printf("   -> Blue ratio in red circle: %.3f\n", blueRatio);
-
-	// daca are suficient albastru inauntru, il consideram Oprire interzisa
-	if (blueRatio > 0.15)
+	if (blueRatio > 0.08)
 		return "Oprire interzisa";
 
 	return "Interzis intrarea";
 }
 
-std::string recognizeTrafficSign(const std::string& shapeName, const std::string& colorName, const Mat& hsv, const Rect& box, double area)
+std::string recognizeTrafficSign(
+	const std::string& shapeName,
+	const std::string& colorName,
+	const Mat& hsv,
+	const Rect& box,
+	double area)
 {
-	if (shapeName == "Octogon" && colorName == "Rosu" && isLikelyStopSign(box, area))
-		return "STOP";
+	double ratio = (double)box.width / (double)box.height;
+	double rectArea = (double)box.width * (double)box.height;
+	double fillRatio = area / rectArea;
 
+	// Cedeaza = DOAR rosu + triunghi
 	if (shapeName == "Triunghi" && colorName == "Rosu")
 		return "Cedeaza";
 
-	if (shapeName == "Patrulater" && colorName == "Galben")
-		return "Drum cu prioritate";
+	// STOP = DOAR rosu + octogon
+	if (shapeName == "Octogon" && colorName == "Rosu" && isLikelyStopSign(box, area))
+		return "STOP";
 
-	if (shapeName == "Cerc" && colorName == "Albastru")
-		return "Obligatoriu in fata";
-
+	// Semne circulare rosii = DOAR cerc + rosu
 	if (shapeName == "Cerc" && colorName == "Rosu")
-		return recognizeRedCircularSign(hsv, box);
+	{
+		if (ratio > 0.75 && ratio < 1.25 && fillRatio > 0.45)
+			return recognizeRedCircularSign(hsv, box);
 
+		return "Necunoscut";
+	}
+
+	// Drum cu prioritate = DOAR galben + patrulater
+	if (shapeName == "Patrulater" && colorName == "Galben")
+	{
+		if (ratio > 0.6 && ratio < 1.4)
+			return "Drum cu prioritate";
+	}
+
+	// Obligatoriu inainte = DOAR albastru + cerc
+	if (shapeName == "Cerc" && colorName == "Albastru")
+		return "Obligatoriu inainte";
+
+	// Sens unic = DOAR albastru + patrulater + dimensiune mica de semn
 	if (shapeName == "Patrulater" && colorName == "Albastru")
-		return "Trecere de pietoni / Sens unic";
+	{
+		if (box.width < 120 && box.height < 120)
+			return "Sens unic";
+
+		return "Necunoscut";
+	}
 
 	return "Necunoscut";
 }
 
-void detectAndRecognizeCandidates(const Mat& mask, Mat& result, const std::string& colorName, const Mat& hsv)
+void detectAndRecognizeCandidates(
+	const Mat& mask,
+	Mat& result,
+	const std::string& colorName,
+	const Mat& hsv)
 {
 	std::vector<std::vector<Point>> contours;
 	std::vector<Vec4i> hierarchy;
@@ -763,15 +791,37 @@ void detectAndRecognizeCandidates(const Mat& mask, Mat& result, const std::strin
 			continue;
 
 		double perimeter = arcLength(contours[i], true);
+		if (perimeter < 1.0)
+			continue;
 
-		std::vector<Point> approx;
-		approxPolyDP(contours[i], approx, 0.02 * perimeter, true);
+		std::string shapeName = "Forma necunoscuta";
 
-		int corners = (int)approx.size();
-		std::string shapeName = getShapeName(corners, area, perimeter);
+		for (double eps : {0.02, 0.03, 0.04, 0.05})
+		{
+			std::vector<Point> approx;
+			approxPolyDP(contours[i], approx, eps * perimeter, true);
+			int corners = (int)approx.size();
+
+			if (corners == 3 || corners == 4 || corners == 7 || corners == 8)
+			{
+				shapeName = getShapeName(corners, area, perimeter);
+				if (shapeName != "Forma necunoscuta")
+					break;
+			}
+		}
+
+		if (shapeName == "Forma necunoscuta")
+		{
+			std::vector<Point> approx;
+			approxPolyDP(contours[i], approx, 0.02 * perimeter, true);
+			shapeName = getShapeName((int)approx.size(), area, perimeter);
+		}
 
 		if (shapeName == "Forma necunoscuta")
 			continue;
+
+		std::vector<Point> approxFinal;
+		approxPolyDP(contours[i], approxFinal, 0.02 * perimeter, true);
 
 		std::string signName = recognizeTrafficSign(shapeName, colorName, hsv, box, area);
 
@@ -781,25 +831,16 @@ void detectAndRecognizeCandidates(const Mat& mask, Mat& result, const std::strin
 		rectangle(result, box, Scalar(0, 255, 0), 2);
 
 		std::vector<std::vector<Point>> drawVec;
-		drawVec.push_back(approx);
+		drawVec.push_back(approxFinal);
 		drawContours(result, drawVec, 0, Scalar(255, 0, 0), 2);
 
-		putText(result, signName, Point(box.x, box.y - 8),
-			FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 255), 2);
+		int textY = (box.y - 8 > 15) ? (box.y - 8) : 15;
+		putText(result, signName,
+			Point(box.x, textY),
+			FONT_HERSHEY_SIMPLEX, 0.55,
+			Scalar(0, 0, 255), 2);
 
-		double ratio = (double)box.width / (double)box.height;
-		double circularity = 0.0;
-		if (perimeter > 0)
-			circularity = 4.0 * PI * area / (perimeter * perimeter);
-
-		printf("Candidat detectat:\n");
-		printf(" - Culoare: %s\n", colorName.c_str());
-		printf(" - Arie: %.2f\n", area);
-		printf(" - W=%d H=%d Ratio=%.2f\n", box.width, box.height, ratio);
-		printf(" - Colturi: %d\n", corners);
-		printf(" - Circularitate: %.3f\n", circularity);
-		printf(" - Forma: %s\n", shapeName.c_str());
-		printf(" - Semn recunoscut: %s\n\n", signName.c_str());
+		printf("%s\n", signName.c_str());
 	}
 }
 
@@ -818,40 +859,39 @@ void testTrafficSignRecognition()
 		Mat resized;
 		resizeImg(src, resized, 700, true);
 
-		// ignoram partea de jos a imaginii (capota / bord / reflexii)
-		resized.rowRange((int)(resized.rows * 0.85), resized.rows).setTo(Scalar(0, 0, 0));
+		// Ignoram doar partea foarte de jos (capota / reflexii)
+		resized.rowRange((int)(resized.rows * 0.90), resized.rows)
+			.setTo(Scalar(0, 0, 0));
 
 		Mat blurred;
-		GaussianBlur(resized, blurred, Size(5, 5), 0);
+		GaussianBlur(resized, blurred, Size(5, 5), 1.2);
 
 		Mat hsv;
 		cvtColor(blurred, hsv, COLOR_BGR2HSV);
 
 		Mat maskRed1, maskRed2, maskRed;
-		Mat maskBlue, maskYellow;
-
-		// ROSU - praguri putin mai stricte
-		inRange(hsv, Scalar(0, 100, 70), Scalar(10, 255, 255), maskRed1);
-		inRange(hsv, Scalar(170, 100, 70), Scalar(180, 255, 255), maskRed2);
+		inRange(hsv, Scalar(0, 60, 50), Scalar(12, 255, 255), maskRed1);
+		inRange(hsv, Scalar(168, 60, 50), Scalar(180, 255, 255), maskRed2);
 		maskRed = maskRed1 | maskRed2;
 
-		// ALBASTRU - praguri putin mai stricte
-		inRange(hsv, Scalar(100, 100, 60), Scalar(130, 255, 255), maskBlue);
+		Mat maskBlue;
+		inRange(hsv, Scalar(95, 60, 40), Scalar(135, 255, 255), maskBlue);
 
-		// GALBEN - praguri putin mai stricte
-		inRange(hsv, Scalar(18, 100, 100), Scalar(35, 255, 255), maskYellow);
+		Mat maskYellow;
+		inRange(hsv, Scalar(15, 60, 60), Scalar(40, 255, 255), maskYellow);
 
-		Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
+		Mat kernelSmall = getStructuringElement(MORPH_RECT, Size(3, 3));
+		Mat kernelBig = getStructuringElement(MORPH_RECT, Size(5, 5));
 
-		morphologyEx(maskRed, maskRed, MORPH_OPEN, kernel);
-		morphologyEx(maskRed, maskRed, MORPH_CLOSE, kernel);
+		morphologyEx(maskRed, maskRed, MORPH_OPEN, kernelSmall);
+		morphologyEx(maskRed, maskRed, MORPH_CLOSE, kernelBig);
 
-		morphologyEx(maskBlue, maskBlue, MORPH_OPEN, kernel);
-		morphologyEx(maskBlue, maskBlue, MORPH_CLOSE, kernel);
-		dilate(maskBlue, maskBlue, kernel);   // IMPORTANT: intareste semnele albastre mici
+		morphologyEx(maskBlue, maskBlue, MORPH_OPEN, kernelSmall);
+		morphologyEx(maskBlue, maskBlue, MORPH_CLOSE, kernelBig);
+		dilate(maskBlue, maskBlue, kernelSmall, Point(-1, -1), 2);
 
-		morphologyEx(maskYellow, maskYellow, MORPH_OPEN, kernel);
-		morphologyEx(maskYellow, maskYellow, MORPH_CLOSE, kernel);
+		morphologyEx(maskYellow, maskYellow, MORPH_OPEN, kernelSmall);
+		morphologyEx(maskYellow, maskYellow, MORPH_CLOSE, kernelBig);
 
 		Mat result = resized.clone();
 
