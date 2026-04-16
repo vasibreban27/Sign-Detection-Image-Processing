@@ -429,6 +429,7 @@ void showHistogram(const std::string& name, int* hist, const int  hist_cols, con
 // -------------
 
 std::string getShapeName(int corners, double area, double perimeter) {
+
 	if (corners == 3)
 		return "Triunghi";
 
@@ -456,18 +457,19 @@ void testTrafficSignShapeDetection() {
 		Mat src = imread(fname);
 
 		Mat resized;
-		resizeImg(src, resized, 800, true);
+		resizeImg(src, resized, 700, true);
 
 		Mat gray, blurred, edges;
-		cvtColor(resized, gray, COLOR_BGR2GRAY);
+		cvtColor(resized, gray, COLOR_BGR2GRAY); // transform img in gri 
 
-		GaussianBlur(gray, blurred, Size(5, 5), 0);
+		GaussianBlur(gray, blurred, Size(5, 5), 0); // reduce zgomotul pt a reduce muchiile false
 
-		Canny(blurred, edges, 50, 150);
+		Canny(blurred, edges, 50, 150); // detectam muchiile
+		// Canny ne scoate marginile obiectelor, deci putem merge mai departe pe conturi
 
 		std::vector<std::vector<Point>> contours;
 		std::vector<Vec4i> hierarchy;
-		findContours(edges, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+		findContours(edges, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE); // gasim conturile obiectelor
 
 		Mat result = resized.clone();
 
@@ -496,9 +498,9 @@ void testTrafficSignShapeDetection() {
 
 		std::vector<Point> approx;
 		double perimeter = arcLength(contours[bestIdx], true);
-		approxPolyDP(contours[bestIdx], approx, 0.02 * perimeter, true);
+		approxPolyDP(contours[bestIdx], approx, 0.01 * perimeter, true); // simplifica conturul real intr un poligon cu putine vf
 
-		int corners = (int)approx.size();
+		int corners = (int)approx.size(); // nr de colturi
 		double area = contourArea(contours[bestIdx]);
 
 		std::string shapeName = getShapeName(corners, area, perimeter);
@@ -516,11 +518,9 @@ void testTrafficSignShapeDetection() {
 		std::string text1 = "Forma: " + shapeName;
 		std::string text2 = "Colturi: " + std::to_string(corners);
 
-		putText(result, text1, Point(box.x, box.y - 25),
-			FONT_HERSHEY_SIMPLEX, 0.7, Scalar(0, 0, 255), 2);
+		putText(result, text1, Point(box.x, box.y - 25), FONT_HERSHEY_SIMPLEX, 0.7, Scalar(0, 0, 255), 2);
 
-		putText(result, text2, Point(box.x, box.y - 5),
-			FONT_HERSHEY_SIMPLEX, 0.7, Scalar(0, 0, 255), 2);
+		putText(result, text2, Point(box.x, box.y - 5), FONT_HERSHEY_SIMPLEX, 0.7, Scalar(0, 0, 255), 2);
 
 		printf("Contur detectat:\n");
 		printf(" - Arie: %.2f\n", area);
@@ -538,9 +538,235 @@ void testTrafficSignShapeDetection() {
 	}
 }
 
+void detectColorCandidates(const Mat& mask, Mat& result, const std::string& colorName)
+{
+	std::vector<std::vector<Point>> contours;
+	std::vector<Vec4i> hierarchy;
 
+	findContours(mask, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
 
+	for (int i = 0; i < (int)contours.size(); i++)
+	{
+		double area = contourArea(contours[i]);
 
+		// ignoram regiunile foarte mici
+		if (area < 500)
+			continue;
+
+		Rect box = boundingRect(contours[i]);
+
+		// ignoram candidatele prea mici
+		if (box.width < 20 || box.height < 20)
+			continue;
+
+		rectangle(result, box, Scalar(0, 255, 0), 2);
+
+		std::string text = colorName;
+		putText(result, text, Point(box.x, box.y - 5),
+			FONT_HERSHEY_SIMPLEX, 0.6, Scalar(0, 0, 255), 2);
+
+		printf("[%s] Candidat gasit: x=%d y=%d w=%d h=%d area=%.2f\n",
+			colorName.c_str(), box.x, box.y, box.width, box.height, area);
+	}
+}
+
+void testTrafficSignColorCandidates()
+{
+	char fname[MAX_PATH];
+	while (openFileDlg(fname))
+	{
+		Mat src = imread(fname);
+		if (src.empty())
+		{
+			printf("Nu s-a putut incarca imaginea.\n");
+			return;
+		}
+
+		Mat resized;
+		resizeImg(src, resized, 700, true);
+
+		Mat blurred;
+		GaussianBlur(resized, blurred, Size(5, 5), 0);
+
+		Mat hsv;
+		cvtColor(blurred, hsv, COLOR_BGR2HSV);
+
+		// masti pentru culori
+		Mat maskRed1, maskRed2, maskRed;
+		Mat maskBlue, maskYellow;
+
+		// ROSU
+		inRange(hsv, Scalar(0, 70, 50), Scalar(10, 255, 255), maskRed1);
+		inRange(hsv, Scalar(170, 70, 50), Scalar(180, 255, 255), maskRed2);
+		maskRed = maskRed1 | maskRed2;
+
+		// ALBASTRU
+		inRange(hsv, Scalar(100, 80, 50), Scalar(130, 255, 255), maskBlue);
+
+		// GALBEN
+		inRange(hsv, Scalar(15, 80, 80), Scalar(35, 255, 255), maskYellow);
+
+		// curatare masti
+		Mat kernel = getStructuringElement(MORPH_RECT, Size(5, 5));
+
+		morphologyEx(maskRed, maskRed, MORPH_OPEN, kernel);
+		morphologyEx(maskRed, maskRed, MORPH_CLOSE, kernel);
+
+		morphologyEx(maskBlue, maskBlue, MORPH_OPEN, kernel);
+		morphologyEx(maskBlue, maskBlue, MORPH_CLOSE, kernel);
+
+		morphologyEx(maskYellow, maskYellow, MORPH_OPEN, kernel);
+		morphologyEx(maskYellow, maskYellow, MORPH_CLOSE, kernel);
+
+		Mat result = resized.clone();
+
+		detectColorCandidates(maskRed, result, "Rosu");
+		detectColorCandidates(maskBlue, result, "Albastru");
+		detectColorCandidates(maskYellow, result, "Galben");
+
+		imshow("Imagine originala", resized);
+		imshow("HSV", hsv);
+		imshow("Masca rosu", maskRed);
+		imshow("Masca albastru", maskBlue);
+		imshow("Masca galben", maskYellow);
+		imshow("Candidate dupa culoare", result);
+
+		waitKey(0);
+	}
+}
+
+std::string recognizeTrafficSign(const std::string& shapeName, const std::string& colorName)
+{  
+	if (shapeName == "Octogon" && colorName == "Rosu")
+		return "STOP";
+
+	if (shapeName == "Triunghi" && colorName == "Rosu")
+		return "Cedeaza";
+
+	if (shapeName == "Patrulater" && colorName == "Galben")
+		return "Drum cu prioritate";
+
+	if (shapeName == "Cerc" && colorName == "Albastru")
+		return "Obligatoriu in fata";
+
+	if (shapeName == "Cerc" && colorName == "Rosu")
+		return "Interzis intrarea";
+
+	// cerc -> rosu + albastru = oprire interezisa
+
+	if (shapeName == "Patrulater" && colorName == "Albastru")
+		return "Trecere de pieton / Sens unic";
+
+	return "Necunoscut";
+}
+
+void detectAndRecognizeCandidates(const Mat& mask, Mat& result, const std::string& colorName)
+{
+	std::vector<std::vector<Point>> contours;
+	std::vector<Vec4i> hierarchy;
+
+	findContours(mask, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+
+	for (int i = 0; i < (int)contours.size(); i++)
+	{
+		double area = contourArea(contours[i]);
+
+		if (area < 500)
+			continue;
+
+		Rect box = boundingRect(contours[i]);
+
+		if (box.width < 20 || box.height < 20)
+			continue;
+
+		double perimeter = arcLength(contours[i], true);
+
+		std::vector<Point> approx;
+		approxPolyDP(contours[i], approx, 0.01 * perimeter, true);
+
+		int corners = (int)approx.size();
+		std::string shapeName = getShapeName(corners, area, perimeter);
+		std::string signName = recognizeTrafficSign(shapeName, colorName);
+
+		rectangle(result, box, Scalar(0, 255, 0), 2);
+
+		std::vector<std::vector<Point>> drawVec;
+		drawVec.push_back(approx);
+		drawContours(result, drawVec, 0, Scalar(255, 0, 0), 2);
+
+		putText(result, signName, Point(box.x, box.y - 8),
+			FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 255), 2);
+
+		printf("Candidat detectat:\n");
+		printf(" - Culoare: %s\n", colorName.c_str());
+		printf(" - Arie: %.2f\n", area);
+		printf(" - Colturi: %d\n", corners);
+		printf(" - Forma: %s\n", shapeName.c_str());
+		printf(" - Semn recunoscut: %s\n\n", signName.c_str());
+	}
+}
+
+void testTrafficSignRecognition()
+{
+	char fname[MAX_PATH];
+	while (openFileDlg(fname))
+	{
+		Mat src = imread(fname);
+		if (src.empty())
+		{
+			printf("Nu s-a putut incarca imaginea.\n");
+			return;
+		}
+
+		Mat resized;
+		resizeImg(src, resized, 700, true);
+
+		Mat blurred;
+		GaussianBlur(resized, blurred, Size(5, 5), 0);
+
+		Mat hsv;
+		cvtColor(blurred, hsv, COLOR_BGR2HSV);
+
+		Mat maskRed1, maskRed2, maskRed;
+		Mat maskBlue, maskYellow;
+
+		// ROSU
+		inRange(hsv, Scalar(0, 70, 50), Scalar(10, 255, 255), maskRed1);
+		inRange(hsv, Scalar(170, 70, 50), Scalar(180, 255, 255), maskRed2);
+		maskRed = maskRed1 | maskRed2;
+
+		// ALBASTRU
+		inRange(hsv, Scalar(100, 80, 50), Scalar(130, 255, 255), maskBlue);
+
+		// GALBEN
+		inRange(hsv, Scalar(15, 80, 80), Scalar(35, 255, 255), maskYellow);
+
+		Mat kernel = getStructuringElement(MORPH_RECT, Size(5, 5));
+
+		morphologyEx(maskRed, maskRed, MORPH_OPEN, kernel);
+		morphologyEx(maskRed, maskRed, MORPH_CLOSE, kernel);
+
+		morphologyEx(maskBlue, maskBlue, MORPH_OPEN, kernel);
+		morphologyEx(maskBlue, maskBlue, MORPH_CLOSE, kernel);
+
+		morphologyEx(maskYellow, maskYellow, MORPH_OPEN, kernel);
+		morphologyEx(maskYellow, maskYellow, MORPH_CLOSE, kernel);
+
+		Mat result = resized.clone();
+
+		detectAndRecognizeCandidates(maskRed, result, "Rosu");
+		detectAndRecognizeCandidates(maskBlue, result, "Albastru");
+		detectAndRecognizeCandidates(maskYellow, result, "Galben");
+
+		imshow("Imagine originala", resized);
+		imshow("Masca rosu", maskRed);
+		imshow("Masca albastru", maskBlue);
+		imshow("Masca galben", maskYellow);
+		imshow("Recunoastere semne", result);
+
+		waitKey(0);
+	}
+}
 
 int main()
 {
@@ -566,6 +792,8 @@ int main()
 		printf(" 11 - Snap frame from live video\n");
 		printf(" 12 - Mouse callback demo\n");
 		printf(" 13 - Detectare semn dupa forma\n");
+		printf(" 14 - Detectare candidate dupa culoare\n");
+		printf(" 15 - Detectare si recunoastere semne\n");
 		printf(" 0 - Exit\n\n");
 		printf("Option: ");
 		scanf("%d", &op);
@@ -609,6 +837,12 @@ int main()
 			break;
 		case 13:
 			testTrafficSignShapeDetection();
+			break;
+		case 14:
+			testTrafficSignColorCandidates();
+			break;
+		case 15:
+			testTrafficSignRecognition();
 			break;
 		}
 	} while (op != 0);
