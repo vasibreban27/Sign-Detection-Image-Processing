@@ -427,8 +427,51 @@ void showHistogram(const std::string& name, int* hist, const int  hist_cols, con
 }
 
 // -------------
+bool touchesImageBorder(const Rect& box, const Mat& img)
+{
+	int margin = 5;
 
-std::string getShapeName(int corners, double area, double perimeter) {
+	if (box.x <= margin || box.y <= margin)
+		return true;
+
+	if (box.x + box.width >= img.cols - margin)
+		return true;
+
+	if (box.y + box.height >= img.rows - margin)
+		return true;
+
+	return false;
+}
+
+bool isValidCandidate(Rect box, double area, const Mat& img)
+{
+	if (area < 150)
+		return false;
+
+	if (box.width < 12 || box.height < 12)
+		return false;
+
+	double ratio = (double)box.width / (double)box.height;
+
+	// mai permisiv pentru semne mici / indepartate
+	if (ratio < 0.5 || ratio > 1.5)
+		return false;
+
+	if (touchesImageBorder(box, img))
+		return false;
+
+	return true;
+}
+
+std::string getShapeName(int corners, double area, double perimeter)
+{
+	double circularity = 0.0;
+	if (perimeter > 0)
+		circularity = 4.0 * PI * area / (perimeter * perimeter);
+
+	// verific daca seamana cu cerc
+	if (circularity > 0.82)
+		return "Cerc";
 
 	if (corners == 3)
 		return "Triunghi";
@@ -436,16 +479,10 @@ std::string getShapeName(int corners, double area, double perimeter) {
 	if (corners == 4)
 		return "Patrulater";
 
-	if (corners == 8) {
+	if (corners == 8)
 		return "Octogon";
-	}
 
-	// verificare pt cerc
-	double circularity = 0.0;
-	if (perimeter > 0)
-		circularity = 4.0 * PI * area / (perimeter * perimeter);
-
-	if (corners > 8 || circularity > 0.8)
+	if (corners > 8)
 		return "Cerc";
 
 	return "Forma necunoscuta";
@@ -570,6 +607,24 @@ void detectColorCandidates(const Mat& mask, Mat& result, const std::string& colo
 	}
 }
 
+
+bool isLikelyStopSign(const Rect& box, double area)
+{
+	double ratio = (double)box.width / (double)box.height;
+
+	if (ratio < 0.8 || ratio > 1.2)
+		return false;
+
+	double rectArea = (double)box.width * (double)box.height;
+	double fillRatio = area / rectArea;
+
+	// daca forma ocupa prea putin sau prea mult din dreptunghi, e suspect
+	if (fillRatio < 0.55 || fillRatio > 0.95)
+		return false;
+
+	return true;
+}
+
 void testTrafficSignColorCandidates()
 {
 	char fname[MAX_PATH];
@@ -635,9 +690,43 @@ void testTrafficSignColorCandidates()
 	}
 }
 
-std::string recognizeTrafficSign(const std::string& shapeName, const std::string& colorName)
-{  
-	if (shapeName == "Octogon" && colorName == "Rosu")
+
+double getBlueRatioInBox(const Mat& hsv, const Rect& box)
+{
+	Rect safeBox = box & Rect(0, 0, hsv.cols, hsv.rows);
+	if (safeBox.width <= 0 || safeBox.height <= 0)
+		return 0.0;
+
+	Mat roi = hsv(safeBox);
+
+	Mat maskBlue;
+	inRange(roi, Scalar(100, 100, 60), Scalar(130, 255, 255), maskBlue);
+
+	int bluePixels = countNonZero(maskBlue);
+	int totalPixels = safeBox.width * safeBox.height;
+
+	if (totalPixels == 0)
+		return 0.0;
+
+	return (double)bluePixels / (double)totalPixels;
+}
+
+std::string recognizeRedCircularSign(const Mat& hsv, const Rect& box)
+{
+	double blueRatio = getBlueRatioInBox(hsv, box);
+
+	printf("   -> Blue ratio in red circle: %.3f\n", blueRatio);
+
+	// daca are suficient albastru inauntru, il consideram Oprire interzisa
+	if (blueRatio > 0.15)
+		return "Oprire interzisa";
+
+	return "Interzis intrarea";
+}
+
+std::string recognizeTrafficSign(const std::string& shapeName, const std::string& colorName, const Mat& hsv, const Rect& box, double area)
+{
+	if (shapeName == "Octogon" && colorName == "Rosu" && isLikelyStopSign(box, area))
 		return "STOP";
 
 	if (shapeName == "Triunghi" && colorName == "Rosu")
@@ -650,17 +739,15 @@ std::string recognizeTrafficSign(const std::string& shapeName, const std::string
 		return "Obligatoriu in fata";
 
 	if (shapeName == "Cerc" && colorName == "Rosu")
-		return "Interzis intrarea";
-
-	// cerc -> rosu + albastru = oprire interezisa
+		return recognizeRedCircularSign(hsv, box);
 
 	if (shapeName == "Patrulater" && colorName == "Albastru")
-		return "Trecere de pieton / Sens unic";
+		return "Trecere de pietoni / Sens unic";
 
 	return "Necunoscut";
 }
 
-void detectAndRecognizeCandidates(const Mat& mask, Mat& result, const std::string& colorName)
+void detectAndRecognizeCandidates(const Mat& mask, Mat& result, const std::string& colorName, const Mat& hsv)
 {
 	std::vector<std::vector<Point>> contours;
 	std::vector<Vec4i> hierarchy;
@@ -670,23 +757,26 @@ void detectAndRecognizeCandidates(const Mat& mask, Mat& result, const std::strin
 	for (int i = 0; i < (int)contours.size(); i++)
 	{
 		double area = contourArea(contours[i]);
-
-		if (area < 500)
-			continue;
-
 		Rect box = boundingRect(contours[i]);
 
-		if (box.width < 20 || box.height < 20)
+		if (!isValidCandidate(box, area, mask))
 			continue;
 
 		double perimeter = arcLength(contours[i], true);
 
 		std::vector<Point> approx;
-		approxPolyDP(contours[i], approx, 0.01 * perimeter, true);
+		approxPolyDP(contours[i], approx, 0.02 * perimeter, true);
 
 		int corners = (int)approx.size();
 		std::string shapeName = getShapeName(corners, area, perimeter);
-		std::string signName = recognizeTrafficSign(shapeName, colorName);
+
+		if (shapeName == "Forma necunoscuta")
+			continue;
+
+		std::string signName = recognizeTrafficSign(shapeName, colorName, hsv, box, area);
+
+		if (signName == "Necunoscut")
+			continue;
 
 		rectangle(result, box, Scalar(0, 255, 0), 2);
 
@@ -697,10 +787,17 @@ void detectAndRecognizeCandidates(const Mat& mask, Mat& result, const std::strin
 		putText(result, signName, Point(box.x, box.y - 8),
 			FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 255), 2);
 
+		double ratio = (double)box.width / (double)box.height;
+		double circularity = 0.0;
+		if (perimeter > 0)
+			circularity = 4.0 * PI * area / (perimeter * perimeter);
+
 		printf("Candidat detectat:\n");
 		printf(" - Culoare: %s\n", colorName.c_str());
 		printf(" - Arie: %.2f\n", area);
+		printf(" - W=%d H=%d Ratio=%.2f\n", box.width, box.height, ratio);
 		printf(" - Colturi: %d\n", corners);
+		printf(" - Circularitate: %.3f\n", circularity);
 		printf(" - Forma: %s\n", shapeName.c_str());
 		printf(" - Semn recunoscut: %s\n\n", signName.c_str());
 	}
@@ -721,6 +818,9 @@ void testTrafficSignRecognition()
 		Mat resized;
 		resizeImg(src, resized, 700, true);
 
+		// ignoram partea de jos a imaginii (capota / bord / reflexii)
+		resized.rowRange((int)(resized.rows * 0.85), resized.rows).setTo(Scalar(0, 0, 0));
+
 		Mat blurred;
 		GaussianBlur(resized, blurred, Size(5, 5), 0);
 
@@ -730,33 +830,34 @@ void testTrafficSignRecognition()
 		Mat maskRed1, maskRed2, maskRed;
 		Mat maskBlue, maskYellow;
 
-		// ROSU
-		inRange(hsv, Scalar(0, 70, 50), Scalar(10, 255, 255), maskRed1);
-		inRange(hsv, Scalar(170, 70, 50), Scalar(180, 255, 255), maskRed2);
+		// ROSU - praguri putin mai stricte
+		inRange(hsv, Scalar(0, 100, 70), Scalar(10, 255, 255), maskRed1);
+		inRange(hsv, Scalar(170, 100, 70), Scalar(180, 255, 255), maskRed2);
 		maskRed = maskRed1 | maskRed2;
 
-		// ALBASTRU
-		inRange(hsv, Scalar(100, 80, 50), Scalar(130, 255, 255), maskBlue);
+		// ALBASTRU - praguri putin mai stricte
+		inRange(hsv, Scalar(100, 100, 60), Scalar(130, 255, 255), maskBlue);
 
-		// GALBEN
-		inRange(hsv, Scalar(15, 80, 80), Scalar(35, 255, 255), maskYellow);
+		// GALBEN - praguri putin mai stricte
+		inRange(hsv, Scalar(18, 100, 100), Scalar(35, 255, 255), maskYellow);
 
-		Mat kernel = getStructuringElement(MORPH_RECT, Size(5, 5));
+		Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
 
 		morphologyEx(maskRed, maskRed, MORPH_OPEN, kernel);
 		morphologyEx(maskRed, maskRed, MORPH_CLOSE, kernel);
 
 		morphologyEx(maskBlue, maskBlue, MORPH_OPEN, kernel);
 		morphologyEx(maskBlue, maskBlue, MORPH_CLOSE, kernel);
+		dilate(maskBlue, maskBlue, kernel);   // IMPORTANT: intareste semnele albastre mici
 
 		morphologyEx(maskYellow, maskYellow, MORPH_OPEN, kernel);
 		morphologyEx(maskYellow, maskYellow, MORPH_CLOSE, kernel);
 
 		Mat result = resized.clone();
 
-		detectAndRecognizeCandidates(maskRed, result, "Rosu");
-		detectAndRecognizeCandidates(maskBlue, result, "Albastru");
-		detectAndRecognizeCandidates(maskYellow, result, "Galben");
+		detectAndRecognizeCandidates(maskRed, result, "Rosu", hsv);
+		detectAndRecognizeCandidates(maskBlue, result, "Albastru", hsv);
+		detectAndRecognizeCandidates(maskYellow, result, "Galben", hsv);
 
 		imshow("Imagine originala", resized);
 		imshow("Masca rosu", maskRed);
