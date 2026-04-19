@@ -426,6 +426,7 @@ void showHistogram(const std::string& name, int* hist, const int  hist_cols, con
 	imshow(name, imgHist);
 }
 
+
 // -------------
 bool touchesImageBorder(const Rect& box, const Mat& img)
 {
@@ -463,9 +464,10 @@ bool isValidCandidate(Rect box, double area, const Mat& img)
 
 std::string getShapeName(int corners, double area, double perimeter)
 {
-	double circularity = 0.0;
-	if (perimeter > 0)
-		circularity = 4.0 * CV_PI * area / (perimeter * perimeter);
+	if (perimeter <= 0)
+		return "Forma necunoscuta";
+
+	double circularity = 4 * CV_PI * area / (perimeter * perimeter);
 
 	if (corners == 3)
 		return "Triunghi";
@@ -473,14 +475,100 @@ std::string getShapeName(int corners, double area, double perimeter)
 	if (corners == 4)
 		return "Patrulater";
 
-	if (corners == 7 || corners == 8)
+	if (corners == 8)
 		return "Octogon";
 
-	// cerc doar daca este foarte circular si nu seamana cu poligoane simple
-	if (circularity > 0.88 && corners > 8)
+	if (circularity > 0.70 && corners > 8)
 		return "Cerc";
 
 	return "Forma necunoscuta";
+}
+
+double getWhiteRatioInBox(const Mat& hsv, const Rect& box)
+{
+	Rect safeBox = box & Rect(0, 0, hsv.cols, hsv.rows);
+	if (safeBox.width <= 0 || safeBox.height <= 0)
+		return 0.0;
+
+	Mat roi = hsv(safeBox);
+
+	Mat maskWhite;
+	inRange(roi, Scalar(0, 0, 120), Scalar(180, 160, 255), maskWhite);
+
+	Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
+	morphologyEx(maskWhite, maskWhite, MORPH_OPEN, kernel);
+	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernel);
+
+	int whitePixels = countNonZero(maskWhite);
+	int totalPixels = safeBox.width * safeBox.height;
+
+	if (totalPixels == 0)
+		return 0.0;
+
+	return (double)whitePixels / (double)totalPixels;
+}
+
+bool hasWhiteArrowInside(const Mat& hsv, const Rect& box)
+{
+	Rect safeBox = box & Rect(0, 0, hsv.cols, hsv.rows);
+	if (safeBox.width <= 0 || safeBox.height <= 0)
+		return false;
+
+	Mat roi = hsv(safeBox);
+
+	Mat maskWhite;
+	inRange(roi, Scalar(0, 0, 140), Scalar(180, 120, 255), maskWhite);
+
+	Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
+	morphologyEx(maskWhite, maskWhite, MORPH_OPEN, kernel);
+	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernel);
+	dilate(maskWhite, maskWhite, kernel, Point(-1, -1), 1);
+
+	std::vector<std::vector<Point>> contours;
+	std::vector<Vec4i> hierarchy;
+	findContours(maskWhite, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+
+	double maxArea = 0.0;
+	int bestIdx = -1;
+
+	for (int i = 0; i < (int)contours.size(); i++)
+	{
+		double a = contourArea(contours[i]);
+		if (a > maxArea)
+		{
+			maxArea = a;
+			bestIdx = i;
+		}
+	}
+
+	if (bestIdx == -1)
+		return false;
+
+	double areaRatio = maxArea / (double)(safeBox.width * safeBox.height);
+	if (areaRatio < 0.05 || areaRatio > 0.70)
+		return false;
+
+	Rect whiteBox = boundingRect(contours[bestIdx]);
+
+	double hRatio = (double)whiteBox.height / (double)safeBox.height;
+	double wRatio = (double)whiteBox.width / (double)safeBox.width;
+
+	if (hRatio < 0.20 || hRatio > 0.95)
+		return false;
+
+	if (wRatio < 0.08 || wRatio > 0.85)
+		return false;
+
+	int cx = whiteBox.x + whiteBox.width / 2;
+	int cy = whiteBox.y + whiteBox.height / 2;
+
+	if (cx < safeBox.width * 0.10 || cx > safeBox.width * 0.90)
+		return false;
+
+	if (cy < safeBox.height * 0.10 || cy > safeBox.height * 0.90)
+		return false;
+
+	return true;
 }
 
 bool hasWhiteHorizontalBar(const Mat& hsv, const Rect& box)
@@ -491,27 +579,42 @@ bool hasWhiteHorizontalBar(const Mat& hsv, const Rect& box)
 
 	Mat roi = hsv(safeBox);
 
-	// masca pentru alb
 	Mat maskWhite;
-	inRange(roi, Scalar(0, 0, 220), Scalar(180, 40, 255), maskWhite);
+	inRange(roi, Scalar(0, 0, 170), Scalar(180, 90, 255), maskWhite);
 
-	// luam doar banda centrala orizontala
-	int y1 = roi.rows / 3;
-	int y2 = 2 * roi.rows / 3;
-	Rect centerBand(0, y1, roi.cols, y2 - y1);
+	Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
+	morphologyEx(maskWhite, maskWhite, MORPH_OPEN, kernel);
+	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernel);
 
-	Mat whiteBand = maskWhite(centerBand);
+	std::vector<std::vector<Point>> contours;
+	std::vector<Vec4i> hierarchy;
+	findContours(maskWhite, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
 
-	int whitePixels = countNonZero(whiteBand);
-	int totalPixels = centerBand.width * centerBand.height;
+	for (int i = 0; i < (int)contours.size(); i++)
+	{
+		double area = contourArea(contours[i]);
+		if (area < 80)
+			continue;
 
-	if (totalPixels == 0)
-		return false;
+		Rect wb = boundingRect(contours[i]);
 
-	double whiteRatio = (double)whitePixels / (double)totalPixels;
+		double wRatio = (double)wb.width / (double)roi.cols;
+		double hRatio = (double)wb.height / (double)roi.rows;
+		double aspect = (double)wb.width / (double)wb.height;
 
-	// daca exista suficient alb pe banda centrala, consideram ca are bara alba
-	return whiteRatio > 0.25;
+		int centerY = wb.y + wb.height / 2;
+		bool isCentered = (centerY > roi.rows * 0.35 && centerY < roi.rows * 0.65);
+
+		if (wRatio > 0.45 &&
+			hRatio > 0.12 && hRatio < 0.45 &&
+			aspect > 2.0 &&
+			isCentered)
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 void testTrafficSignShapeDetection() {
@@ -634,18 +737,66 @@ void detectColorCandidates(const Mat& mask, Mat& result, const std::string& colo
 }
 
 
-bool isLikelyStopSign(const Rect& box, double area)
+bool isLikelyStopSign(const Mat& hsv, const Rect& box, double area)
 {
-	double ratio = (double)box.width / (double)box.height;
-
-	if (ratio < 0.8 || ratio > 1.2)
+	if (box.width < 35 || box.height < 35)
 		return false;
+
+	double ratio = (double)box.width / (double)box.height;
+	if (ratio < 0.85 || ratio > 1.15)
+		return false;
+
 
 	double rectArea = (double)box.width * (double)box.height;
 	double fillRatio = area / rectArea;
+	if (fillRatio < 0.65 || fillRatio > 0.90)
+		return false;
 
-	// daca forma ocupa prea putin sau prea mult din dreptunghi, e suspect
-	if (fillRatio < 0.55 || fillRatio > 0.95)
+	Rect safeBox = box & Rect(0, 0, hsv.cols, hsv.rows);
+	if (safeBox.width <= 0 || safeBox.height <= 0)
+		return false;
+
+	Mat roi = hsv(safeBox);
+
+	Mat maskWhite;
+	inRange(roi, Scalar(0, 0, 170), Scalar(180, 90, 255), maskWhite);
+
+	int whitePixels = countNonZero(maskWhite);
+	int totalPixels = safeBox.width * safeBox.height;
+
+	if (totalPixels == 0)
+		return false;
+
+	double whiteRatio = (double)whitePixels / (double)totalPixels;
+
+	// STOP are de obicei putin alb din litere, dar nu foarte mult
+	if (whiteRatio < 0.01 || whiteRatio > 0.25)
+		return false;
+
+	return true;
+}
+
+bool isLikelyYieldSign(const Mat& hsv, const Rect& box, double area)
+{
+	if (box.width < 20 || box.height < 20)
+		return false;
+
+	double ratio = (double)box.width / (double)box.height;
+	if (ratio < 0.55 || ratio > 1.45)
+		return false;
+
+	double rectArea = (double)box.width * (double)box.height;
+	if (rectArea <= 0)
+		return false;
+
+	double fillRatio = area / rectArea;
+	if (fillRatio < 0.20 || fillRatio > 0.85)
+		return false;
+
+	double whiteRatio = getWhiteRatioInBox(hsv, box);
+
+	// la Cedeaza ar trebui sa existe destul alb in interior
+	if (whiteRatio < 0.28)
 		return false;
 
 	return true;
@@ -756,49 +907,42 @@ std::string recognizeTrafficSign(
 	double area,
 	int corners)
 {
+	double blueRatio = getBlueRatioInBox(hsv, box);
 	double ratio = (double)box.width / (double)box.height;
 	double rectArea = (double)box.width * (double)box.height;
 	double fillRatio = area / rectArea;
 
+
 	// Cedeaza = rosu + triunghi
-	if (colorName == "Rosu" && corners == 3)
+	printf("Corners: %d  ", corners);
+	printf("ShapeName: %s\n\n", shapeName.c_str());
+	if ((corners == 3 || corners == 4) && isLikelyYieldSign(hsv, box, area))
 		return "Cedeaza";
 
 	// Interzis intrarea = semn rosu cu bara alba centrala
 	if (colorName == "Rosu" && hasWhiteHorizontalBar(hsv, box))
 		return "Interzis intrarea";
 
-	// STOP = rosu + 7/8 colturi + fara bara alba
-	if (colorName == "Rosu" && (corners == 7 || corners == 8) && isLikelyStopSign(box, area))
+	// STOP = rosu + 8 colturi + fara bara alba
+	if (colorName == "Rosu" && corners == 8 && shapeName == "Octogon" && isLikelyStopSign(hsv, box, area) && !hasWhiteHorizontalBar(hsv, box) && blueRatio < 0.10)
 		return "STOP";
 
-	// Semne circulare rosii
-	if (shapeName == "Cerc" && colorName == "Rosu")
-	{
-		if (ratio > 0.75 && ratio < 1.25 && fillRatio > 0.45)
-			return recognizeRedCircularSign(hsv, box);
-
-		return "Necunoscut";
-	}
-
 	// Drum cu prioritate
-	if (colorName == "Galben" && corners == 4)
+	if (colorName == "Galben" && corners == 4 && shapeName == "Patrulater")
 	{
-		if (ratio > 0.6 && ratio < 1.4)
+		if (ratio > 0.8 && ratio < 1.2)
 			return "Drum cu prioritate";
 	}
 
 	// Obligatoriu inainte
-	if (shapeName == "Cerc" && colorName == "Albastru")
+	if (shapeName == "Cerc" && colorName == "Albastru" && hasWhiteArrowInside(hsv, box))
 		return "Obligatoriu inainte";
 
 	// Sens unic
-	if (colorName == "Albastru" && corners == 4)
+	if (colorName == "Albastru" && corners == 4 && shapeName == "Patrulater" && hasWhiteArrowInside(hsv, box))
 	{
-		if (box.width < 120 && box.height < 120)
+		// if (ratio > 0.75 && ratio < 1.35)
 			return "Sens unic";
-
-		return "Necunoscut";
 	}
 
 	return "Necunoscut";
@@ -830,13 +974,13 @@ void detectAndRecognizeCandidates(
 		std::string shapeName = "Forma necunoscuta";
 		int bestCorners = 0;
 
-		for (double eps : {0.02, 0.03, 0.04, 0.05})
+		for (double eps : {0.015, 0.02, 0.025, 0.03})
 		{
 			std::vector<Point> approx;
 			approxPolyDP(contours[i], approx, eps * perimeter, true);
 			int corners = (int)approx.size();
 
-			if (corners == 3 || corners == 4 || corners == 7 || corners == 8)
+			if (corners == 3 || corners == 4 || corners >= 8)
 			{
 				shapeName = getShapeName(corners, area, perimeter);
 				bestCorners = corners;
@@ -844,6 +988,14 @@ void detectAndRecognizeCandidates(
 					break;
 			}
 		}
+
+		printf("\n--- CANDIDAT NOU ---\n");
+		printf("Color: %s\n", colorName.c_str());
+		printf("Box: x=%d y=%d w=%d h=%d\n", box.x, box.y, box.width, box.height);
+		printf("Area: %.2f\n", area);
+		printf("Perimeter: %.2f\n", perimeter);
+		printf("Corners: %d\n", bestCorners);
+		printf("ShapeName: %s\n", shapeName.c_str());
 
 		if (shapeName == "Forma necunoscuta")
 		{
@@ -941,7 +1093,7 @@ void testTrafficSignRecognition()
 		detectAndRecognizeCandidates(maskBlue, result, "Albastru", hsv);
 		detectAndRecognizeCandidates(maskYellow, result, "Galben", hsv);
 
-		imshow("Imagine originala", resized);
+		// imshow("Imagine originala", resized);
 		imshow("Masca rosu", maskRed);
 		imshow("Masca albastru", maskBlue);
 		imshow("Masca galben", maskYellow);
@@ -974,9 +1126,7 @@ int main()
 		printf(" 10 - Edges in a video sequence\n");
 		printf(" 11 - Snap frame from live video\n");
 		printf(" 12 - Mouse callback demo\n");
-		printf(" 13 - Detectare semn dupa forma\n");
-		printf(" 14 - Detectare candidate dupa culoare\n");
-		printf(" 15 - Detectare si recunoastere semne\n");
+		printf(" 13 - Detectare si recunoastere semne\n");
 		printf(" 0 - Exit\n\n");
 		printf("Option: ");
 		scanf("%d", &op);
@@ -1019,12 +1169,6 @@ int main()
 			testMouseClick();
 			break;
 		case 13:
-			testTrafficSignShapeDetection();
-			break;
-		case 14:
-			testTrafficSignColorCandidates();
-			break;
-		case 15:
 			testTrafficSignRecognition();
 			break;
 		}
