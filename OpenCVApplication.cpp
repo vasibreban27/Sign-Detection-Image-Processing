@@ -472,7 +472,7 @@ std::string getShapeName(int corners, double area, double perimeter)
 	if (corners == 3)
 		return "Triunghi";
 
-	if (corners == 4)
+	if (corners == 4 || corners == 5)
 		return "Patrulater";
 
 	if (corners == 8)
@@ -482,6 +482,14 @@ std::string getShapeName(int corners, double area, double perimeter)
 		return "Cerc";
 
 	return "Forma necunoscuta";
+}
+
+double computeCircularity(double area, double perimeter)
+{
+	if (perimeter <= 0.0)
+		return 0.0;
+
+	return 4.0 * CV_PI * area / (perimeter * perimeter);
 }
 
 double getWhiteRatioInBox(const Mat& hsv, const Rect& box)
@@ -508,7 +516,59 @@ double getWhiteRatioInBox(const Mat& hsv, const Rect& box)
 	return (double)whitePixels / (double)totalPixels;
 }
 
-bool hasWhiteArrowInside(const Mat& hsv, const Rect& box)
+double getRedRatioInBox(const Mat& hsv, const Rect& box)
+{
+	Rect safeBox = box & Rect(0, 0, hsv.cols, hsv.rows);
+	if (safeBox.width <= 0 || safeBox.height <= 0)
+		return 0.0;
+
+	Mat roi = hsv(safeBox);
+
+	Mat maskRed1, maskRed2, maskRed;
+	inRange(roi, Scalar(0, 70, 70), Scalar(10, 255, 255), maskRed1);
+	inRange(roi, Scalar(170, 70, 70), Scalar(180, 255, 255), maskRed2);
+	bitwise_or(maskRed1, maskRed2, maskRed);
+
+	Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
+	morphologyEx(maskRed, maskRed, MORPH_OPEN, kernel);
+	morphologyEx(maskRed, maskRed, MORPH_CLOSE, kernel);
+
+	int redPixels = countNonZero(maskRed);
+	int totalPixels = safeBox.width * safeBox.height;
+
+	if (totalPixels == 0)
+		return 0.0;
+
+	return (double)redPixels / (double)totalPixels;
+}
+
+double getBlackRatioInBox(const Mat& hsv, const Rect& box)
+{
+	Rect safeBox = box & Rect(0, 0, hsv.cols, hsv.rows);
+	if (safeBox.width <= 0 || safeBox.height <= 0)
+		return 0.0;
+
+	Mat roi = hsv(safeBox);
+
+	Mat maskBlack;
+	inRange(roi, Scalar(0, 0, 0), Scalar(180, 255, 70), maskBlack);
+
+	Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
+	morphologyEx(maskBlack, maskBlack, MORPH_OPEN, kernel);
+	morphologyEx(maskBlack, maskBlack, MORPH_CLOSE, kernel);
+
+	int blackPixels = countNonZero(maskBlack);
+	int totalPixels = safeBox.width * safeBox.height;
+
+	if (totalPixels == 0)
+		return 0.0;
+
+	return (double)blackPixels / (double)totalPixels;
+}
+
+
+
+bool hasDirectionalArrowInside(const Mat& hsv, const Rect& box)
 {
 	Rect safeBox = box & Rect(0, 0, hsv.cols, hsv.rows);
 	if (safeBox.width <= 0 || safeBox.height <= 0)
@@ -517,23 +577,102 @@ bool hasWhiteArrowInside(const Mat& hsv, const Rect& box)
 	Mat roi = hsv(safeBox);
 
 	Mat maskWhite;
-	inRange(roi, Scalar(0, 0, 140), Scalar(180, 120, 255), maskWhite);
+	inRange(roi, Scalar(0, 0, 150), Scalar(180, 130, 255), maskWhite);
 
 	Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
+	Mat kernelBig = getStructuringElement(MORPH_ELLIPSE, Size(5, 5));
+
 	morphologyEx(maskWhite, maskWhite, MORPH_OPEN, kernel);
-	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernel);
-	dilate(maskWhite, maskWhite, kernel, Point(-1, -1), 1);
+	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernelBig);
+	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernelBig);
 
 	std::vector<std::vector<Point>> contours;
 	std::vector<Vec4i> hierarchy;
 	findContours(maskWhite, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
 
+	int countValid = 0;
+	double bestArea = 0.0;
+	int bestIdx = -1;
+
+	for (int i = 0; i < (int)contours.size(); i++)
+	{
+		double a = contourArea(contours[i]);
+		if (a < 35)
+			continue;
+
+		countValid++;
+
+		if (a > bestArea)
+		{
+			bestArea = a;
+			bestIdx = i;
+		}
+	}
+
+	if (bestIdx == -1)
+		return false;
+
+	Rect wb = boundingRect(contours[bestIdx]);
+
+	double areaRatio = bestArea / (double)(safeBox.width * safeBox.height);
+	double wRatio = (double)wb.width / (double)safeBox.width;
+	double hRatio = (double)wb.height / (double)safeBox.height;
+	double aspectHW = (double)wb.height / (double)wb.width;
+
+	// in imagini reale sageata poate fi sparta in mai multe parti
+	if (countValid > 6)
+		return false;
+
+	if (areaRatio < 0.06 || areaRatio > 0.50)
+		return false;
+
+	if (wRatio < 0.18 || wRatio > 0.60)
+		return false;
+
+	if (hRatio < 0.35 || hRatio > 0.90)
+		return false;
+
+	if (aspectHW < 1.3)
+		return false;
+
+	int cx = wb.x + wb.width / 2;
+	if (cx < safeBox.width * 0.20 || cx > safeBox.width * 0.80)
+		return false;
+
+	return true;
+}
+
+bool hasSingleWhiteArrowBlob(const Mat& hsv, const Rect& box)
+{
+	Rect safeBox = box & Rect(0, 0, hsv.cols, hsv.rows);
+	if (safeBox.width <= 0 || safeBox.height <= 0)
+		return false;
+
+	Mat roi = hsv(safeBox);
+
+	Mat maskWhite;
+	inRange(roi, Scalar(0, 0, 160), Scalar(180, 110, 255), maskWhite);
+
+	Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
+	morphologyEx(maskWhite, maskWhite, MORPH_OPEN, kernel);
+	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernel);
+
+	std::vector<std::vector<Point>> contours;
+	std::vector<Vec4i> hierarchy;
+	findContours(maskWhite, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+
+	int countValid = 0;
 	double maxArea = 0.0;
 	int bestIdx = -1;
 
 	for (int i = 0; i < (int)contours.size(); i++)
 	{
 		double a = contourArea(contours[i]);
+		if (a < 40)
+			continue;
+
+		countValid++;
+
 		if (a > maxArea)
 		{
 			maxArea = a;
@@ -544,28 +683,41 @@ bool hasWhiteArrowInside(const Mat& hsv, const Rect& box)
 	if (bestIdx == -1)
 		return false;
 
+	Rect wb = boundingRect(contours[bestIdx]);
+
+	int margin = 3;
+
+	// daca blobul dominant atinge marginea ROI, cel mai probabil nu este sageata unui semn,
+	// ci un obiect mare partial capturat (masina, bord, reflexie etc.)
+	if (wb.x <= margin || wb.y <= margin ||
+		wb.x + wb.width >= safeBox.width - margin ||
+		wb.y + wb.height >= safeBox.height - margin)
+	{
+		return false;
+	}
+
 	double areaRatio = maxArea / (double)(safeBox.width * safeBox.height);
+	double wRatio = (double)wb.width / (double)safeBox.width;
+	double hRatio = (double)wb.height / (double)safeBox.height;
+
+	double aspect1 = (double)wb.width / (double)wb.height;
+	double aspect2 = (double)wb.height / (double)wb.width;
+	double elongation = (std::max)(aspect1, aspect2);
+
+	// pentru sens unic acceptam pana la 4 componente valide
+	if (countValid > 4)
+		return false;
+
 	if (areaRatio < 0.05 || areaRatio > 0.70)
 		return false;
 
-	Rect whiteBox = boundingRect(contours[bestIdx]);
-
-	double hRatio = (double)whiteBox.height / (double)safeBox.height;
-	double wRatio = (double)whiteBox.width / (double)safeBox.width;
-
-	if (hRatio < 0.20 || hRatio > 0.95)
+	if (elongation < 1.15)
 		return false;
 
-	if (wRatio < 0.08 || wRatio > 0.85)
+	if (wRatio < 0.10 || wRatio > 0.85)
 		return false;
 
-	int cx = whiteBox.x + whiteBox.width / 2;
-	int cy = whiteBox.y + whiteBox.height / 2;
-
-	if (cx < safeBox.width * 0.10 || cx > safeBox.width * 0.90)
-		return false;
-
-	if (cy < safeBox.height * 0.10 || cy > safeBox.height * 0.90)
+	if (hRatio < 0.18 || hRatio > 0.95)
 		return false;
 
 	return true;
@@ -617,123 +769,130 @@ bool hasWhiteHorizontalBar(const Mat& hsv, const Rect& box)
 	return false;
 }
 
-void testTrafficSignShapeDetection() {
-	char fname[MAX_PATH];
-	while (openFileDlg(fname)) {
-		Mat src = imread(fname);
-
-		Mat resized;
-		resizeImg(src, resized, 700, true);
-
-		Mat gray, blurred, edges;
-		cvtColor(resized, gray, COLOR_BGR2GRAY); // transform img in gri 
-
-		GaussianBlur(gray, blurred, Size(5, 5), 0); // reduce zgomotul pt a reduce muchiile false
-
-		Canny(blurred, edges, 50, 150); // detectam muchiile
-		// Canny ne scoate marginile obiectelor, deci putem merge mai departe pe conturi
-
-		std::vector<std::vector<Point>> contours;
-		std::vector<Vec4i> hierarchy;
-		findContours(edges, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE); // gasim conturile obiectelor
-
-		Mat result = resized.clone();
-
-		double maxArea = 0.0;
-		int bestIdx = -1;
-
-		// alegem cel mai mare contur care ar putea fi semnul
-		for (int i = 0; i < (int)contours.size(); i++)
-		{
-			double area = contourArea(contours[i]);
-			if (area > 1000 && area > maxArea)
-			{
-				maxArea = area;
-				bestIdx = i;
-			}
-		}
-
-		if (bestIdx == -1)
-		{
-			printf("Nu am gasit un contur suficient de mare.\n");
-			imshow("Imagine originala", resized);
-			imshow("Muchii", edges);
-			waitKey(0);
-			continue;
-		}
-
-		std::vector<Point> approx;
-		double perimeter = arcLength(contours[bestIdx], true);
-		approxPolyDP(contours[bestIdx], approx, 0.01 * perimeter, true); // simplifica conturul real intr un poligon cu putine vf
-
-		int corners = (int)approx.size(); // nr de colturi
-		double area = contourArea(contours[bestIdx]);
-
-		std::string shapeName = getShapeName(corners, area, perimeter);
-
-		// desenam conturul aproximat
-		std::vector<std::vector<Point>> drawVec;
-		drawVec.push_back(approx);
-		drawContours(result, drawVec, 0, Scalar(0, 255, 0), 3);
-
-		// bounding box
-		Rect box = boundingRect(approx);
-		rectangle(result, box, Scalar(255, 0, 0), 2);
-
-		// text
-		std::string text1 = "Forma: " + shapeName;
-		std::string text2 = "Colturi: " + std::to_string(corners);
-
-		putText(result, text1, Point(box.x, box.y - 25), FONT_HERSHEY_SIMPLEX, 0.7, Scalar(0, 0, 255), 2);
-
-		putText(result, text2, Point(box.x, box.y - 5), FONT_HERSHEY_SIMPLEX, 0.7, Scalar(0, 0, 255), 2);
-
-		printf("Contur detectat:\n");
-		printf(" - Arie: %.2f\n", area);
-		printf(" - Perimetru: %.2f\n", perimeter);
-		printf(" - Numar colturi: %d\n", corners);
-		printf(" - Forma detectata: %s\n", shapeName.c_str());
-
-		imshow("Imagine originala", resized);
-		imshow("Gray", gray);
-		imshow("Blurred", blurred);
-		imshow("Muchii", edges);
-		imshow("Rezultat forma", result);
-
-		waitKey(0);
-	}
-}
-
-void detectColorCandidates(const Mat& mask, Mat& result, const std::string& colorName)
+bool hasWhiteTriangleWithBlackDetails(const Mat& hsv, const Rect& box)
 {
+	Rect safeBox = box & Rect(0, 0, hsv.cols, hsv.rows);
+	if (safeBox.width <= 0 || safeBox.height <= 0)
+	{
+		//printf("FAIL: safeBox invalid\n");
+		return false;
+	}
+
+	Mat roi = hsv(safeBox);
+
+	//masca albului
+	Mat maskWhite;
+	inRange(roi, Scalar(0, 0, 150), Scalar(180, 120, 255), maskWhite);
+
+	//inchidere mai puternica, ca sa umple golurile produse de pieton si zebra
+	Mat kernelBig = getStructuringElement(MORPH_ELLIPSE, Size(7, 7));
+	Mat kernelSmall = getStructuringElement(MORPH_RECT, Size(3, 3));
+
+	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernelBig);
+	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernelBig);
+	morphologyEx(maskWhite, maskWhite, MORPH_OPEN, kernelSmall);
+
 	std::vector<std::vector<Point>> contours;
 	std::vector<Vec4i> hierarchy;
+	findContours(maskWhite, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
 
-	findContours(mask, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+
+	int bestIdx = -1;
+	double bestArea = 0.0;
+	std::vector<Point> bestApprox;
 
 	for (int i = 0; i < (int)contours.size(); i++)
 	{
 		double area = contourArea(contours[i]);
-
-		// ignoram regiunile foarte mici
-		if (area < 500)
+		if (area < 50)
+		{
 			continue;
+		}
 
-		Rect box = boundingRect(contours[i]);
-
-		// ignoram candidatele prea mici
-		if (box.width < 20 || box.height < 20)
+		double perimeter = arcLength(contours[i], true);
+		if (perimeter <= 0.0)
+		{
 			continue;
+		}
 
-		rectangle(result, box, Scalar(0, 255, 0), 2);
+		std::vector<Point> approx;
+		approxPolyDP(contours[i], approx, 0.06 * perimeter, true);
 
-		std::string text = colorName;
-		putText(result, text, Point(box.x, box.y - 5),
-			FONT_HERSHEY_SIMPLEX, 0.6, Scalar(0, 0, 255), 2);
+		Rect triBox = boundingRect(contours[i]);
 
-		printf("[%s] Candidat gasit: x=%d y=%d w=%d h=%d area=%.2f\n",
-			colorName.c_str(), box.x, box.y, box.width, box.height, area);
+		double areaRatio = area / (double)(safeBox.width * safeBox.height);
+		double wRatio = (double)triBox.width / (double)safeBox.width;
+		double hRatio = (double)triBox.height / (double)safeBox.height;
+
+		// acceptam si 3, si 4 colturi, fiindca dupa closing poate iesi usor deformata
+		if ((int)approx.size() < 3 || (int)approx.size() > 6)
+		{
+			//printf(" -> respins: nu are 3/4 colturi\n");
+			continue;
+		}
+
+		if (areaRatio < 0.04 || areaRatio > 0.90)
+		{
+			//printf(" -> respins: areaRatio\n");
+			continue;
+		}
+
+		if (wRatio < 0.15 || wRatio > 1.00)
+		{
+			//printf(" -> respins: wRatio\n");
+			continue;
+		}
+
+		if (hRatio < 0.15 || hRatio > 1.00)
+		{
+			//printf(" -> respins: hRatio\n");
+			continue;
+		}
+
+		if (area > bestArea)
+		{
+			bestArea = area;
+			bestIdx = i;
+			bestApprox = approx;
+		}
 	}
+
+	if (bestIdx == -1)
+	{
+		//printf("FAIL: nu a gasit triunghi alb valid\n");
+		return false;
+	}
+
+	//masca triunghiului/regiunii albe dominante
+	Mat triangleMask = Mat::zeros(roi.size(), CV_8UC1);
+	drawContours(triangleMask, contours, bestIdx, Scalar(255), FILLED);
+
+	//cautam negrul in interior
+	Mat maskBlack;
+	inRange(roi, Scalar(0, 0, 0), Scalar(180, 255, 90), maskBlack);
+	morphologyEx(maskBlack, maskBlack, MORPH_OPEN, kernelSmall);
+
+	Mat blackInsideTriangle;
+	bitwise_and(maskBlack, triangleMask, blackInsideTriangle);
+
+	int blackPixels = countNonZero(blackInsideTriangle);
+	int trianglePixels = countNonZero(triangleMask);
+
+	if (trianglePixels == 0)
+	{
+		//printf("FAIL: trianglePixels = 0\n");
+		return false;
+	}
+
+	double blackRatioInsideTriangle = (double)blackPixels / (double)trianglePixels;
+
+	// relaxam putin pragul
+	if (blackRatioInsideTriangle < 0.005)
+	{
+		//printf("FAIL: blackRatioInsideTriangle prea mic\n");
+		return false;
+	}
+	return true;
 }
 
 
@@ -802,71 +961,6 @@ bool isLikelyYieldSign(const Mat& hsv, const Rect& box, double area)
 	return true;
 }
 
-void testTrafficSignColorCandidates()
-{
-	char fname[MAX_PATH];
-	while (openFileDlg(fname))
-	{
-		Mat src = imread(fname);
-		if (src.empty())
-		{
-			printf("Nu s-a putut incarca imaginea.\n");
-			return;
-		}
-
-		Mat resized;
-		resizeImg(src, resized, 700, true);
-
-		Mat blurred;
-		GaussianBlur(resized, blurred, Size(5, 5), 0);
-
-		Mat hsv;
-		cvtColor(blurred, hsv, COLOR_BGR2HSV);
-
-		// masti pentru culori
-		Mat maskRed1, maskRed2, maskRed;
-		Mat maskBlue, maskYellow;
-
-		// ROSU
-		inRange(hsv, Scalar(0, 70, 50), Scalar(10, 255, 255), maskRed1);
-		inRange(hsv, Scalar(170, 70, 50), Scalar(180, 255, 255), maskRed2);
-		maskRed = maskRed1 | maskRed2;
-
-		// ALBASTRU
-		inRange(hsv, Scalar(100, 80, 50), Scalar(130, 255, 255), maskBlue);
-
-		// GALBEN
-		inRange(hsv, Scalar(15, 80, 80), Scalar(35, 255, 255), maskYellow);
-
-		// curatare masti
-		Mat kernel = getStructuringElement(MORPH_RECT, Size(5, 5));
-
-		morphologyEx(maskRed, maskRed, MORPH_OPEN, kernel);
-		morphologyEx(maskRed, maskRed, MORPH_CLOSE, kernel);
-
-		morphologyEx(maskBlue, maskBlue, MORPH_OPEN, kernel);
-		morphologyEx(maskBlue, maskBlue, MORPH_CLOSE, kernel);
-
-		morphologyEx(maskYellow, maskYellow, MORPH_OPEN, kernel);
-		morphologyEx(maskYellow, maskYellow, MORPH_CLOSE, kernel);
-
-		Mat result = resized.clone();
-
-		detectColorCandidates(maskRed, result, "Rosu");
-		detectColorCandidates(maskBlue, result, "Albastru");
-		detectColorCandidates(maskYellow, result, "Galben");
-
-		imshow("Imagine originala", resized);
-		imshow("HSV", hsv);
-		imshow("Masca rosu", maskRed);
-		imshow("Masca albastru", maskBlue);
-		imshow("Masca galben", maskYellow);
-		imshow("Candidate dupa culoare", result);
-
-		waitKey(0);
-	}
-}
-
 
 double getBlueRatioInBox(const Mat& hsv, const Rect& box)
 {
@@ -889,14 +983,86 @@ double getBlueRatioInBox(const Mat& hsv, const Rect& box)
 	return (double)bluePixels / (double)totalPixels;
 }
 
-std::string recognizeRedCircularSign(const Mat& hsv, const Rect& box)
+
+bool isLikelyNoStoppingSign(const Mat& hsv, const Rect& box, double area, double perimeter)
 {
+	if (box.width < 25 || box.height < 25)
+		return false;
+
+	double ratio = (double)box.width / (double)box.height;
+	if (ratio < 0.80 || ratio > 1.20)
+		return false;
+
+	double circularity = computeCircularity(area, perimeter);
+	if (circularity < 0.60)
+		return false;
+
 	double blueRatio = getBlueRatioInBox(hsv, box);
+	double redRatio = getRedRatioInBox(hsv, box);
+	double whiteRatio = getWhiteRatioInBox(hsv, box);
+	//printf("%f %f %f\n", blueRatio, redRatio, whiteRatio);
+	if (blueRatio < 0.20)
+		return false;
 
-	if (blueRatio > 0.08)
-		return "Oprire interzisa";
+	if (redRatio < 0.10)
+		return false;
 
-	return "Interzis intrarea";
+	//sa nu fie acces interzis
+	if (hasWhiteHorizontalBar(hsv, box))
+		return false;
+
+	//prea mult alb nu e specific
+	if (whiteRatio > 0.25)
+		return false;
+
+	return true;
+}
+
+bool isLikelyPedestrianCrossingSignRelaxed(const Mat& hsv, const Rect& box, double area, double perimeter)
+{
+	Rect safeBox = box & Rect(0, 0, hsv.cols, hsv.rows);
+	if (safeBox.width <= 0 || safeBox.height <= 0)
+		return false;
+
+	if (safeBox.width < 45 || safeBox.height < 45)
+		return false;
+
+	if (area < 1800)
+		return false;
+
+	double ratio = (double)safeBox.width / (double)safeBox.height;
+	if (ratio < 0.80 || ratio > 1.15)
+		return false;
+
+	double rectArea = (double)safeBox.width * (double)safeBox.height;
+	if (rectArea <= 0.0)
+		return false;
+
+	double fillRatio = area / rectArea;
+	if (fillRatio < 0.35 || fillRatio > 0.98)
+		return false;
+
+	double blueRatio = getBlueRatioInBox(hsv, safeBox);
+	double whiteRatio = getWhiteRatioInBox(hsv, safeBox);
+	double blackRatio = getBlackRatioInBox(hsv, safeBox);
+	bool arrowBlob = hasSingleWhiteArrowBlob(hsv, safeBox);
+
+	if (blueRatio < 0.20)
+		return false;
+
+	// la trecere de pietoni vrem destul alb
+	if (whiteRatio < 0.22)
+		return false;
+
+	// trebuie sa existe macar putin negru in interior
+	if (blackRatio < 0.01)
+		return false;
+
+	// daca seamana clar cu o sageata, nu e trecere
+	if (arrowBlob)
+		return false;
+
+	return true;
 }
 
 std::string recognizeTrafficSign(
@@ -905,6 +1071,7 @@ std::string recognizeTrafficSign(
 	const Mat& hsv,
 	const Rect& box,
 	double area,
+	double perimeter,
 	int corners)
 {
 	double blueRatio = getBlueRatioInBox(hsv, box);
@@ -914,37 +1081,66 @@ std::string recognizeTrafficSign(
 
 
 	// Cedeaza = rosu + triunghi
-	printf("Corners: %d  ", corners);
-	printf("ShapeName: %s\n\n", shapeName.c_str());
-	if ((corners == 3 || corners == 4) && isLikelyYieldSign(hsv, box, area))
+	//printf("Corners: %d  ", corners);
+	//printf("ShapeName: %s\n\n", shapeName.c_str());
+	printf("[recognizeTrafficSign] color=%s area=%.2f perimeter=%.2f box=(%d,%d,%d,%d)\n",
+		colorName.c_str(), area, perimeter, box.x, box.y, box.width, box.height);
+
+	//Cedeaza trecerea
+	if ((corners == 3 || corners == 4) && colorName=="Rosu" && isLikelyYieldSign(hsv, box, area))
 		return "Cedeaza";
 
-	// Interzis intrarea = semn rosu cu bara alba centrala
-	if (colorName == "Rosu" && hasWhiteHorizontalBar(hsv, box))
-		return "Interzis intrarea";
+	if ((colorName == "Rosu" || colorName == "Albastru") && (shapeName == "Cerc" || corners >= 6))
+	{
+		//Acces Interzis = cerc + rosu + bara alba orizontala
+		if (hasWhiteHorizontalBar(hsv, box))
+			return "Acces interzis";
+
+		//Oprire interzisa = cerc + rosu/albastru
+		if (isLikelyNoStoppingSign(hsv, box, area, perimeter))
+			return "Oprire interzisa";
+	}
 
 	// STOP = rosu + 8 colturi + fara bara alba
 	if (colorName == "Rosu" && corners == 8 && shapeName == "Octogon" && isLikelyStopSign(hsv, box, area) && !hasWhiteHorizontalBar(hsv, box) && blueRatio < 0.10)
 		return "STOP";
 
 	// Drum cu prioritate
-	if (colorName == "Galben" && corners == 4 && shapeName == "Patrulater")
+	if (colorName == "Galben" && (shapeName == "Patrulater" || corners == 4 || corners == 5))
 	{
-		if (ratio > 0.8 && ratio < 1.2)
+		if (ratio > 0.75 && ratio < 1.25)
 			return "Drum cu prioritate";
 	}
 
-	// Obligatoriu inainte
-	if (shapeName == "Cerc" && colorName == "Albastru" && hasWhiteArrowInside(hsv, box))
-		return "Obligatoriu inainte";
-
-	// Sens unic
-	if (colorName == "Albastru" && corners == 4 && shapeName == "Patrulater" && hasWhiteArrowInside(hsv, box))
+	// Sens unic = semn albastru patrulater + o singura sageata alba dominanta
+	if (colorName == "Albastru" &&
+		(shapeName == "Patrulater" || corners == 4 || corners == 5))
 	{
-		// if (ratio > 0.75 && ratio < 1.35)
+		bool arrowBlob = hasSingleWhiteArrowBlob(hsv, box);
+		bool pedRelaxed = isLikelyPedestrianCrossingSignRelaxed(hsv, box, area, perimeter);
+		bool pedStrict = hasWhiteTriangleWithBlackDetails(hsv, box);
+
+		if (arrowBlob && !pedStrict && !pedRelaxed)
 			return "Sens unic";
 	}
 
+
+	// Trecere de pietoni = semn albastru patrat + triunghi alb + detalii negre in interior
+	if (colorName == "Albastru" &&
+		(shapeName == "Patrulater" || corners == 4 || corners == 5))
+	{
+		bool pedStrict = hasWhiteTriangleWithBlackDetails(hsv, box);
+		bool pedRelaxed = isLikelyPedestrianCrossingSignRelaxed(hsv, box, area, perimeter);
+
+		if (pedStrict || pedRelaxed)
+			return "Trecere pietoni";
+	}
+
+	// Obligatoriu inainte
+	if (shapeName == "Cerc" && colorName == "Albastru" && hasDirectionalArrowInside(hsv, box))
+		return "Obligatoriu inainte";
+
+	
 	return "Necunoscut";
 }
 
@@ -980,7 +1176,7 @@ void detectAndRecognizeCandidates(
 			approxPolyDP(contours[i], approx, eps * perimeter, true);
 			int corners = (int)approx.size();
 
-			if (corners == 3 || corners == 4 || corners >= 8)
+			if (corners >= 3)
 			{
 				shapeName = getShapeName(corners, area, perimeter);
 				bestCorners = corners;
@@ -996,6 +1192,11 @@ void detectAndRecognizeCandidates(
 		printf("Perimeter: %.2f\n", perimeter);
 		printf("Corners: %d\n", bestCorners);
 		printf("ShapeName: %s\n", shapeName.c_str());
+
+		double blueRatioDbg = getBlueRatioInBox(hsv, box);
+		double whiteRatioDbg = getWhiteRatioInBox(hsv, box);
+		double redRatioDbg = getRedRatioInBox(hsv, box);
+		double circularityDbg = computeCircularity(area, perimeter);
 
 		if (shapeName == "Forma necunoscuta")
 		{
@@ -1017,6 +1218,7 @@ void detectAndRecognizeCandidates(
 			hsv,
 			box,
 			area,
+			perimeter,
 			bestCorners);
 
 		if (signName == "Necunoscut")
