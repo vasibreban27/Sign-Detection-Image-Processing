@@ -430,12 +430,9 @@ void showHistogram(const std::string& name, int* hist, const int  hist_cols, con
 }
 
 
-
-// ------------------------------------------------------------
-// Operatii morfologice implementate manual pentru masti binare
-// In proiectul de semne, mastile obtinute cu inRange au obiectul alb (255)
+//operatii morfologice implementate manual pentru masti binare
+//mastile obtinute cu inRange au obiectul alb (255)
 // si fundalul negru (0), deci functiile de mai jos lucreaza cu foreground = 255.
-// ------------------------------------------------------------
 bool isInside(const Mat& img, int i, int j)
 {
 	return i >= 0 && i < img.rows && j >= 0 && j < img.cols;
@@ -561,6 +558,52 @@ Mat dilatareRepetata(const Mat& src, const vector<Point>& B, int iterations)
 	return dst;
 }
 
+
+Mat myInRange(const Mat& src, Scalar lower, Scalar upper)
+{
+	Mat dst(src.rows, src.cols, CV_8UC1);
+
+	for (int i = 0; i < src.rows; i++)
+	{
+		for (int j = 0; j < src.cols; j++)
+		{
+			Vec3b pixel = src.at<Vec3b>(i, j);
+
+			bool ok = true;
+
+			for (int c = 0; c < 3; c++)
+			{
+				if (pixel[c] < lower[c] || pixel[c] > upper[c])
+				{
+					ok = false;
+					break;
+				}
+			}
+
+			dst.at<uchar>(i, j) = ok ? 255 : 0;
+		}
+	}
+
+	return dst;
+}
+
+int myCountNonZero(const Mat& src)
+{
+	int count = 0;
+
+	for (int i = 0; i < src.rows; i++)
+	{
+		const uchar* row = src.ptr<uchar>(i);
+
+		for (int j = 0; j < src.cols; j++)
+		{
+			if (row[j] != 0)
+				count++;
+		}
+	}
+
+	return count;
+}
 // -------------
 bool touchesImageBorder(const Rect& box, const Mat& img)
 {
@@ -635,13 +678,14 @@ double getWhiteRatioInBox(const Mat& hsv, const Rect& box)
 	Mat roi = hsv(safeBox);
 
 	Mat maskWhite;
-	inRange(roi, Scalar(0, 0, 120), Scalar(180, 160, 255), maskWhite);
+	maskWhite = myInRange(roi, Scalar(0, 0, 120), Scalar(180, 160, 255));
+	//inRange(roi, Scalar(0, 0, 120), Scalar(180, 160, 255), maskWhite);
 
 	vector<Point> kernel = getElementStructural(8);
 	maskWhite = deschidere(maskWhite, kernel);
 	maskWhite = inchidere(maskWhite, kernel);
 
-	int whitePixels = countNonZero(maskWhite);
+	int whitePixels = myCountNonZero(maskWhite);
 	int totalPixels = safeBox.width * safeBox.height;
 
 	if (totalPixels == 0)
@@ -659,15 +703,17 @@ double getRedRatioInBox(const Mat& hsv, const Rect& box)
 	Mat roi = hsv(safeBox);
 
 	Mat maskRed1, maskRed2, maskRed;
-	inRange(roi, Scalar(0, 70, 70), Scalar(10, 255, 255), maskRed1);
-	inRange(roi, Scalar(170, 70, 70), Scalar(180, 255, 255), maskRed2);
+	maskRed1 = myInRange(roi, Scalar(0, 70, 70), Scalar(10, 255, 255));
+	maskRed2 = myInRange(roi, Scalar(170, 70, 70), Scalar(180, 255, 255));
+	//inRange(roi, Scalar(0, 70, 70), Scalar(10, 255, 255), maskRed1);
+	//inRange(roi, Scalar(170, 70, 70), Scalar(180, 255, 255), maskRed2);
 	bitwise_or(maskRed1, maskRed2, maskRed);
 
 	vector<Point> kernel = getElementStructural(8);
 	maskRed = deschidere(maskRed, kernel);
 	maskRed = inchidere(maskRed, kernel);
 
-	int redPixels = countNonZero(maskRed);
+	int redPixels = myCountNonZero(maskRed);
 	int totalPixels = safeBox.width * safeBox.height;
 
 	if (totalPixels == 0)
@@ -685,13 +731,14 @@ double getBlackRatioInBox(const Mat& hsv, const Rect& box)
 	Mat roi = hsv(safeBox);
 
 	Mat maskBlack;
-	inRange(roi, Scalar(0, 0, 0), Scalar(180, 255, 70), maskBlack);
+	maskBlack = myInRange(roi, Scalar(0, 0, 0), Scalar(180, 255, 70));
+	//inRange(roi, Scalar(0, 0, 0), Scalar(180, 255, 70), maskBlack);
 
 	vector<Point> kernel = getElementStructural(8);
 	maskBlack = deschidere(maskBlack, kernel);
 	maskBlack = inchidere(maskBlack, kernel);
 
-	int blackPixels = countNonZero(maskBlack);
+	int blackPixels = myCountNonZero(maskBlack);
 	int totalPixels = safeBox.width * safeBox.height;
 
 	if (totalPixels == 0)
@@ -711,7 +758,8 @@ bool hasDirectionalArrowInside(const Mat& hsv, const Rect& box)
 	Mat roi = hsv(safeBox);
 
 	Mat maskWhite;
-	inRange(roi, Scalar(0, 0, 150), Scalar(180, 130, 255), maskWhite);
+	maskWhite = myInRange(roi, Scalar(0, 0, 150), Scalar(180, 130, 255));
+	//inRange(roi, Scalar(0, 0, 150), Scalar(180, 130, 255), maskWhite);
 
 	vector<Point> kernel = getElementStructural(8);
 	vector<Point> kernelBig = getElementStructuralEllipse(5);
@@ -785,7 +833,8 @@ bool hasSingleWhiteArrowBlob(const Mat& hsv, const Rect& box)
 	Mat roi = hsv(safeBox);
 
 	Mat maskWhite;
-	inRange(roi, Scalar(0, 0, 160), Scalar(180, 110, 255), maskWhite);
+	maskWhite = myInRange(roi, Scalar(0, 0, 160), Scalar(180, 110, 255));
+	//inRange(roi, Scalar(0, 0, 160), Scalar(180, 110, 255), maskWhite);
 
 	vector<Point> kernel = getElementStructural(8);
 	maskWhite = deschidere(maskWhite, kernel);
@@ -866,7 +915,8 @@ bool hasWhiteHorizontalBar(const Mat& hsv, const Rect& box)
 	Mat roi = hsv(safeBox);
 
 	Mat maskWhite;
-	inRange(roi, Scalar(0, 0, 170), Scalar(180, 90, 255), maskWhite);
+	maskWhite = myInRange(roi, Scalar(0, 0, 170), Scalar(180, 90, 255));
+	//inRange(roi, Scalar(0, 0, 170), Scalar(180, 90, 255), maskWhite);
 
 	vector<Point> kernel = getElementStructural(8);
 	maskWhite = deschidere(maskWhite, kernel);
@@ -916,7 +966,8 @@ bool hasWhiteTriangleWithBlackDetails(const Mat& hsv, const Rect& box)
 
 	//masca albului
 	Mat maskWhite;
-	inRange(roi, Scalar(0, 0, 150), Scalar(180, 120, 255), maskWhite);
+	maskWhite = myInRange(roi, Scalar(0, 0, 150), Scalar(180, 120, 255));
+	//inRange(roi, Scalar(0, 0, 150), Scalar(180, 120, 255), maskWhite);
 
 	//inchidere mai puternica, ca sa umple golurile produse de pieton si zebra
 	vector<Point> kernelBig = getElementStructuralEllipse(7);
@@ -1003,14 +1054,15 @@ bool hasWhiteTriangleWithBlackDetails(const Mat& hsv, const Rect& box)
 
 	//cautam negrul in interior
 	Mat maskBlack;
-	inRange(roi, Scalar(0, 0, 0), Scalar(180, 255, 90), maskBlack);
+	maskBlack = myInRange(roi, Scalar(0, 0, 0), Scalar(180, 255, 90));
+	//inRange(roi, Scalar(0, 0, 0), Scalar(180, 255, 90), maskBlack);
 	maskBlack = deschidere(maskBlack, kernelSmall);
 
 	Mat blackInsideTriangle;
 	bitwise_and(maskBlack, triangleMask, blackInsideTriangle);
 
-	int blackPixels = countNonZero(blackInsideTriangle);
-	int trianglePixels = countNonZero(triangleMask);
+	int blackPixels = myCountNonZero(blackInsideTriangle);
+	int trianglePixels = myCountNonZero(triangleMask);
 
 	if (trianglePixels == 0)
 	{
@@ -1052,9 +1104,10 @@ bool isLikelyStopSign(const Mat& hsv, const Rect& box, double area)
 	Mat roi = hsv(safeBox);
 
 	Mat maskWhite;
-	inRange(roi, Scalar(0, 0, 170), Scalar(180, 90, 255), maskWhite);
+	maskWhite = myInRange(roi, Scalar(0, 0, 170), Scalar(180, 90, 255));
+	//inRange(roi, Scalar(0, 0, 170), Scalar(180, 90, 255), maskWhite);
 
-	int whitePixels = countNonZero(maskWhite);
+	int whitePixels = myCountNonZero(maskWhite);
 	int totalPixels = safeBox.width * safeBox.height;
 
 	if (totalPixels == 0)
@@ -1105,10 +1158,11 @@ double getBlueRatioInBox(const Mat& hsv, const Rect& box)
 	Mat roi = hsv(safeBox);
 
 	Mat maskBlue;
+	maskBlue = myInRange(roi, Scalar(95, 60, 40), Scalar(135, 255, 255));
 	// prag mai larg pentru albastru interior
-	inRange(roi, Scalar(95, 60, 40), Scalar(135, 255, 255), maskBlue);
+	//inRange(roi, Scalar(95, 60, 40), Scalar(135, 255, 255), maskBlue);
 
-	int bluePixels = countNonZero(maskBlue);
+	int bluePixels = myCountNonZero(maskBlue);
 	int totalPixels = safeBox.width * safeBox.height;
 
 	if (totalPixels == 0)
@@ -1399,15 +1453,19 @@ void testTrafficSignRecognition()
 		cvtColor(blurred, hsv, COLOR_BGR2HSV);
 
 		Mat maskRed1, maskRed2, maskRed;
-		inRange(hsv, Scalar(0, 60, 50), Scalar(12, 255, 255), maskRed1);
-		inRange(hsv, Scalar(168, 60, 50), Scalar(180, 255, 255), maskRed2);
+		maskRed1 = myInRange(hsv, Scalar(0, 60, 50), Scalar(12, 255, 255));
+		maskRed2 = myInRange(hsv, Scalar(168, 60, 50), Scalar(180, 255, 255));
+	/*	inRange(hsv, Scalar(0, 60, 50), Scalar(12, 255, 255), maskRed1);
+		inRange(hsv, Scalar(168, 60, 50), Scalar(180, 255, 255), maskRed2);*/
 		maskRed = maskRed1 | maskRed2;
 
 		Mat maskBlue;
-		inRange(hsv, Scalar(95, 60, 40), Scalar(135, 255, 255), maskBlue);
+		maskBlue = myInRange(hsv, Scalar(95, 60, 40), Scalar(135, 255, 255));
+		//inRange(hsv, Scalar(95, 60, 40), Scalar(135, 255, 255), maskBlue);
 
 		Mat maskYellow;
-		inRange(hsv, Scalar(15, 60, 60), Scalar(40, 255, 255), maskYellow);
+		maskYellow = myInRange(hsv, Scalar(15, 60, 60), Scalar(40, 255, 255));
+		//inRange(hsv, Scalar(15, 60, 60), Scalar(40, 255, 255), maskYellow);
 
 		vector<Point> kernelSmall = getElementStructural(8);
 		vector<Point> kernelBig = getElementStructuralRect(5);
