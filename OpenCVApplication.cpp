@@ -622,6 +622,33 @@ double myContourArea(const vector<Point>& contour)
 
 	return abs(area) / 2.0;
 }
+
+//intoarce dreptunghiul minim care contine toate punctele din contur
+Rect myBoundingRect(const vector<Point>& contour)
+{
+	if (contour.empty())
+		return Rect();
+
+	int minX = contour[0].x;
+	int maxX = contour[0].x;
+	int minY = contour[0].y;
+	int maxY = contour[0].y;
+
+	for (int i = 1; i < (int)contour.size(); i++)
+	{
+		Point p = contour[i];
+
+		if (p.x < minX) minX = p.x;
+		if (p.x > maxX) maxX = p.x;
+		if (p.y < minY) minY = p.y;
+		if (p.y > maxY) maxY = p.y;
+	}
+
+	int width = maxX - minX + 1;
+	int height = maxY - minY + 1;
+
+	return Rect(minX, minY, width, height);
+}
 // -------------
 bool touchesImageBorder(const Rect& box, const Mat& img)
 {
@@ -812,7 +839,7 @@ bool hasDirectionalArrowInside(const Mat& hsv, const Rect& box)
 	if (bestIdx == -1)
 		return false;
 
-	Rect wb = boundingRect(contours[bestIdx]);
+	Rect wb = myBoundingRect(contours[bestIdx]);
 
 	double areaRatio = bestArea / (double)(safeBox.width * safeBox.height);
 	double wRatio = (double)wb.width / (double)safeBox.width;
@@ -884,7 +911,7 @@ bool hasSingleWhiteArrowBlob(const Mat& hsv, const Rect& box)
 	if (bestIdx == -1)
 		return false;
 
-	Rect wb = boundingRect(contours[bestIdx]);
+	Rect wb = myBoundingRect(contours[bestIdx]);
 
 	int margin = 3;
 
@@ -950,7 +977,7 @@ bool hasWhiteHorizontalBar(const Mat& hsv, const Rect& box)
 		if (area < 80)
 			continue;
 
-		Rect wb = boundingRect(contours[i]);
+		Rect wb = myBoundingRect(contours[i]);
 
 		double wRatio = (double)wb.width / (double)roi.cols;
 		double hRatio = (double)wb.height / (double)roi.rows;
@@ -1021,7 +1048,7 @@ bool hasWhiteTriangleWithBlackDetails(const Mat& hsv, const Rect& box)
 		std::vector<Point> approx;
 		approxPolyDP(contours[i], approx, 0.06 * perimeter, true);
 
-		Rect triBox = boundingRect(contours[i]);
+		Rect triBox = myBoundingRect(contours[i]);
 
 		double areaRatio = area / (double)(safeBox.width * safeBox.height);
 		double wRatio = (double)triBox.width / (double)safeBox.width;
@@ -1363,7 +1390,7 @@ void detectAndRecognizeCandidates(
 	for (int i = 0; i < (int)contours.size(); i++)
 	{
 		double area = myContourArea(contours[i]);
-		Rect box = boundingRect(contours[i]);
+		Rect box = myBoundingRect(contours[i]);
 
 		if (!isValidCandidate(box, area, mask))
 			continue;
