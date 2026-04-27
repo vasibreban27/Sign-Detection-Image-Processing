@@ -649,6 +649,231 @@ Rect myBoundingRect(const vector<Point>& contour)
 
 	return Rect(minX, minY, width, height);
 }
+
+//verifica daca un pixel apartine obiectului
+bool isForeground(const Mat& img, int i, int j)
+{
+	return isInside(img, i, j) && img.at<uchar>(i, j) == 255;
+}
+
+//verifica daca pixelul (i,j) este un pixel de contur (boundary pixel) al unei componente conexe binare (obiect)
+bool isBoundaryPixel(const Mat& img, int i, int j)
+{
+	if (!isForeground(img, i, j))
+		return false;
+
+	int di[8] = { -1,-1,-1, 0,0, 1,1,1 };
+	int dj[8] = { -1, 0, 1,-1,1,-1,0,1 };
+
+	for (int k = 0; k < 8; k++)
+	{
+		int ni = i + di[k];
+		int nj = j + dj[k];
+
+		if (!isInside(img, ni, nj) || img.at<uchar>(ni, nj) == 0)
+			return true;
+	}
+
+	return false;
+}
+
+//extrage o componenta conexa(obiect) folosind BFS
+vector<Point> extractComponentBFS(const Mat& mask, Mat& visited, int si, int sj)
+{
+	vector<Point> component;
+	queue<Point> q;
+
+	int di[8] = { -1,-1,-1, 0,0, 1,1,1 };
+	int dj[8] = { -1, 0, 1,-1,1,-1,0,1 };
+
+	visited.at<uchar>(si, sj) = 1;
+	q.push(Point(sj, si));
+
+	while (!q.empty())
+	{
+		Point p = q.front();
+		q.pop();
+
+		component.push_back(p);
+
+		for (int k = 0; k < 8; k++)
+		{
+			int ni = p.y + di[k];
+			int nj = p.x + dj[k];
+
+			if (isInside(mask, ni, nj) &&
+				mask.at<uchar>(ni, nj) == 255 &&
+				visited.at<uchar>(ni, nj) == 0)
+			{
+				visited.at<uchar>(ni, nj) = 1;
+				q.push(Point(nj, ni));
+			}
+		}
+	}
+
+	return component;
+}
+
+//urmareste conturul exterior al unei componente conexe binare (obiect) si returneaza lista de puncte din contur
+vector<Point> traceExternalContour(const Mat& compMask)
+{
+	vector<Point> contour;
+
+	Point start(-1, -1);
+
+	for (int i = 0; i < compMask.rows && start.x == -1; i++)
+	{
+		for (int j = 0; j < compMask.cols; j++)
+		{
+			if (isBoundaryPixel(compMask, i, j))
+			{
+				start = Point(j, i);
+				break;
+			}
+		}
+	}
+
+	if (start.x == -1)
+		return contour;
+
+	// directii clockwise: E, SE, S, SW, W, NW, N, NE
+	int di[8] = { 0, 1, 1, 1, 0,-1,-1,-1 };
+	int dj[8] = { 1, 1, 0,-1,-1,-1, 0, 1 };
+
+	Point current = start;
+	Point previous(start.x - 1, start.y);
+
+	Point first = start;
+	Point second(-1, -1);
+
+	int steps = 0;
+	int maxSteps = compMask.rows * compMask.cols * 4;
+
+	while (steps < maxSteps)
+	{
+		contour.push_back(current);
+
+		int backIdx = 0;
+		for (int k = 0; k < 8; k++)
+		{
+			if (current.y + di[k] == previous.y &&
+				current.x + dj[k] == previous.x)
+			{
+				backIdx = k;
+				break;
+			}
+		}
+
+		bool found = false;
+		Point next;
+		Point newPrevious;
+
+		for (int t = 1; t <= 8; t++)
+		{
+			int dir = (backIdx + t) % 8;
+
+			int ni = current.y + di[dir];
+			int nj = current.x + dj[dir];
+
+			if (isForeground(compMask, ni, nj))
+			{
+				next = Point(nj, ni);
+
+				int prevDir = (dir + 7) % 8;
+				newPrevious = Point(
+					current.x + dj[prevDir],
+					current.y + di[prevDir]
+				);
+
+				found = true;
+				break;
+			}
+		}
+
+		if (!found)
+			break;
+
+		if (contour.size() == 1)
+			second = next;
+		else if (current == first && next == second)
+			break;
+
+		previous = newPrevious;
+		current = next;
+
+		steps++;
+	}
+
+	return contour;
+}
+
+//simplifica conturul eliminand punctele coliniare 
+vector<Point> myChainApproxSimple(const vector<Point>& contour)
+{
+	if (contour.size() <= 2)
+		return contour;
+
+	vector<Point> result;
+	result.push_back(contour[0]);
+
+	for (int i = 1; i < (int)contour.size() - 1; i++)
+	{
+		Point a = contour[i - 1];
+		Point b = contour[i];
+		Point c = contour[i + 1];
+
+		int dx1 = b.x - a.x;
+		int dy1 = b.y - a.y;
+
+		int dx2 = c.x - b.x;
+		int dy2 = c.y - b.y;
+
+		if (dx1 != dx2 || dy1 != dy2)
+			result.push_back(b);
+	}
+
+	result.push_back(contour.back());
+
+	return result;
+}
+
+//detecteaza toate contururile exterioare dintr-o imagine binara
+void myFindContours(const Mat& mask, vector<vector<Point>>& contours)
+{
+	contours.clear();
+
+	Mat visited(mask.rows, mask.cols, CV_8UC1, Scalar(0));
+
+	for (int i = 0; i < mask.rows; i++)
+	{
+		for (int j = 0; j < mask.cols; j++)
+		{
+			if (mask.at<uchar>(i, j) == 255 &&
+				visited.at<uchar>(i, j) == 0)
+			{
+				vector<Point> component = extractComponentBFS(mask, visited, i, j);
+
+				if (component.size() < 3)
+					continue;
+
+				Mat compMask(mask.rows, mask.cols, CV_8UC1, Scalar(0));
+
+				for (Point p : component)
+					compMask.at<uchar>(p.y, p.x) = 255;
+
+				vector<Point> contour = traceExternalContour(compMask);
+
+				if (contour.size() < 3)
+					continue;
+
+				contour = myChainApproxSimple(contour);
+
+				if (contour.size() >= 3)
+					contours.push_back(contour);
+			}
+		}
+	}
+}
 // -------------
 bool touchesImageBorder(const Rect& box, const Mat& img)
 {
@@ -815,7 +1040,7 @@ bool hasDirectionalArrowInside(const Mat& hsv, const Rect& box)
 
 	std::vector<std::vector<Point>> contours;
 	std::vector<Vec4i> hierarchy;
-	findContours(maskWhite, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+	myFindContours(maskWhite, contours);
 
 	int countValid = 0;
 	double bestArea = 0.0;
@@ -886,8 +1111,8 @@ bool hasSingleWhiteArrowBlob(const Mat& hsv, const Rect& box)
 	maskWhite = inchidere(maskWhite, kernel);
 
 	std::vector<std::vector<Point>> contours;
-	std::vector<Vec4i> hierarchy;
-	findContours(maskWhite, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+	//std::vector<Vec4i> hierarchy;
+	myFindContours(maskWhite, contours);
 
 	int countValid = 0;
 	double maxArea = 0.0;
@@ -968,8 +1193,8 @@ bool hasWhiteHorizontalBar(const Mat& hsv, const Rect& box)
 	maskWhite = inchidere(maskWhite, kernel);
 
 	std::vector<std::vector<Point>> contours;
-	std::vector<Vec4i> hierarchy;
-	findContours(maskWhite, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+	//std::vector<Vec4i> hierarchy;
+	myFindContours(maskWhite, contours);
 
 	for (int i = 0; i < (int)contours.size(); i++)
 	{
@@ -1023,8 +1248,8 @@ bool hasWhiteTriangleWithBlackDetails(const Mat& hsv, const Rect& box)
 	maskWhite = deschidere(maskWhite, kernelSmall);
 
 	std::vector<std::vector<Point>> contours;
-	std::vector<Vec4i> hierarchy;
-	findContours(maskWhite, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+	//std::vector<Vec4i> hierarchy;
+	myFindContours(maskWhite, contours);
 
 
 	int bestIdx = -1;
@@ -1383,9 +1608,9 @@ void detectAndRecognizeCandidates(
 	const Mat& hsv)
 {
 	std::vector<std::vector<Point>> contours;
-	std::vector<Vec4i> hierarchy;
+	//std::vector<Vec4i> hierarchy;
 
-	findContours(mask, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+	myFindContours(mask, contours);
 
 	for (int i = 0; i < (int)contours.size(); i++)
 	{
