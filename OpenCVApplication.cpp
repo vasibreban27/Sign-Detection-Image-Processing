@@ -604,6 +604,24 @@ int myCountNonZero(const Mat& src)
 
 	return count;
 }
+
+double myContourArea(const vector<Point>& contour)
+{
+	if (contour.size() < 3)
+		return 0.0;
+
+	double area = 0.0;
+
+	for (int i = 0; i < (int)contour.size(); i++)
+	{
+		Point p1 = contour[i];
+		Point p2 = contour[(i + 1) % contour.size()];
+
+		area += (double)p1.x * p2.y - (double)p2.x * p1.y;
+	}
+
+	return abs(area) / 2.0;
+}
 // -------------
 bool touchesImageBorder(const Rect& box, const Mat& img)
 {
@@ -778,7 +796,7 @@ bool hasDirectionalArrowInside(const Mat& hsv, const Rect& box)
 
 	for (int i = 0; i < (int)contours.size(); i++)
 	{
-		double a = contourArea(contours[i]);
+		double a = myContourArea(contours[i]);
 		if (a < 35)
 			continue;
 
@@ -850,7 +868,7 @@ bool hasSingleWhiteArrowBlob(const Mat& hsv, const Rect& box)
 
 	for (int i = 0; i < (int)contours.size(); i++)
 	{
-		double a = contourArea(contours[i]);
+		double a = myContourArea(contours[i]);
 		if (a < 40)
 			continue;
 
@@ -928,7 +946,7 @@ bool hasWhiteHorizontalBar(const Mat& hsv, const Rect& box)
 
 	for (int i = 0; i < (int)contours.size(); i++)
 	{
-		double area = contourArea(contours[i]);
+		double area = myContourArea(contours[i]);
 		if (area < 80)
 			continue;
 
@@ -988,7 +1006,7 @@ bool hasWhiteTriangleWithBlackDetails(const Mat& hsv, const Rect& box)
 
 	for (int i = 0; i < (int)contours.size(); i++)
 	{
-		double area = contourArea(contours[i]);
+		double area = myContourArea(contours[i]);
 		if (area < 50)
 		{
 			continue;
@@ -1344,7 +1362,7 @@ void detectAndRecognizeCandidates(
 
 	for (int i = 0; i < (int)contours.size(); i++)
 	{
-		double area = contourArea(contours[i]);
+		double area = myContourArea(contours[i]);
 		Rect box = boundingRect(contours[i]);
 
 		if (!isValidCandidate(box, area, mask))
