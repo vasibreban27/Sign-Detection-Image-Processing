@@ -1000,7 +1000,6 @@ bool isLikelyNoStoppingSign(const Mat& hsv, const Rect& box, double area, double
 	double blueRatio = getBlueRatioInBox(hsv, box);
 	double redRatio = getRedRatioInBox(hsv, box);
 	double whiteRatio = getWhiteRatioInBox(hsv, box);
-	//printf("%f %f %f\n", blueRatio, redRatio, whiteRatio);
 	if (blueRatio < 0.20)
 		return false;
 
@@ -1105,7 +1104,7 @@ std::string recognizeTrafficSign(
 	if (colorName == "Rosu" && corners == 8 && shapeName == "Octogon" && isLikelyStopSign(hsv, box, area) && !hasWhiteHorizontalBar(hsv, box) && blueRatio < 0.10)
 		return "STOP";
 
-	// Drum cu prioritate
+	// Drum cu prioritate = patrulater 4/5 colturi + galben
 	if (colorName == "Galben" && (shapeName == "Patrulater" || corners == 4 || corners == 5))
 	{
 		if (ratio > 0.75 && ratio < 1.25)
