@@ -5,6 +5,9 @@
 #include "common.h"
 #include <opencv2/core/utils/logger.hpp>
 
+using namespace std;
+using namespace cv;
+
 wchar_t* projectPath;
 
 void testOpenImage()
@@ -427,6 +430,137 @@ void showHistogram(const std::string& name, int* hist, const int  hist_cols, con
 }
 
 
+
+// ------------------------------------------------------------
+// Operatii morfologice implementate manual pentru masti binare
+// In proiectul de semne, mastile obtinute cu inRange au obiectul alb (255)
+// si fundalul negru (0), deci functiile de mai jos lucreaza cu foreground = 255.
+// ------------------------------------------------------------
+bool isInside(const Mat& img, int i, int j)
+{
+	return i >= 0 && i < img.rows && j >= 0 && j < img.cols;
+}
+
+vector<Point> getElementStructural(int vecinatate)
+{
+	vector<Point> B;
+
+	if (vecinatate == 4)
+	{
+		B.push_back(Point(0, -1));
+		B.push_back(Point(-1, 0));
+		B.push_back(Point(0, 0));
+		B.push_back(Point(1, 0));
+		B.push_back(Point(0, 1));
+	}
+	else //sau 8
+	{
+		for (int dy = -1; dy <= 1; dy++)
+			for (int dx = -1; dx <= 1; dx++)
+				B.push_back(Point(dx, dy));
+	}
+
+	return B;
+}
+
+vector<Point> getElementStructuralRect(int size)
+{
+	vector<Point> B;
+	int r = size / 2;
+
+	for (int dy = -r; dy <= r; dy++)
+		for (int dx = -r; dx <= r; dx++)
+			B.push_back(Point(dx, dy));
+
+	return B;
+}
+
+vector<Point> getElementStructuralEllipse(int size)
+{
+	vector<Point> B;
+	int r = size / 2;
+	double rr = (double)r * (double)r;
+
+	for (int dy = -r; dy <= r; dy++)
+		for (int dx = -r; dx <= r; dx++)
+			if ((double)(dx * dx + dy * dy) <= rr)
+				B.push_back(Point(dx, dy));
+
+	return B;
+}
+
+Mat dilatare(const Mat& src, const vector<Point>& B)
+{
+	Mat dst(src.rows, src.cols, CV_8UC1, Scalar(0));
+
+	for (int i = 0; i < src.rows; i++)
+		for (int j = 0; j < src.cols; j++)
+			if (src.at<uchar>(i, j) == 255)
+				for (int k = 0; k < (int)B.size(); k++)
+				{
+					int ni = i + B[k].y;
+					int nj = j + B[k].x;
+
+					if (isInside(src, ni, nj))
+						dst.at<uchar>(ni, nj) = 255;
+				}
+
+	return dst;
+}
+
+Mat eroziune(const Mat& src, const vector<Point>& B)
+{
+	Mat dst(src.rows, src.cols, CV_8UC1, Scalar(0));
+
+	for (int i = 0; i < src.rows; i++)
+	{
+		for (int j = 0; j < src.cols; j++)
+		{
+			if (src.at<uchar>(i, j) == 255)
+			{
+				bool ok = true;
+
+				for (int k = 0; k < (int)B.size(); k++)
+				{
+					int ni = i + B[k].y;
+					int nj = j + B[k].x;
+
+					if (!isInside(src, ni, nj) || src.at<uchar>(ni, nj) != 255)
+					{
+						ok = false;
+						break;
+					}
+				}
+
+				if (ok)
+					dst.at<uchar>(i, j) = 255;
+			}
+		}
+	}
+
+	return dst;
+}
+
+Mat deschidere(const Mat& src, const vector<Point>& B)
+{
+	return dilatare(eroziune(src, B), B);
+}
+
+Mat inchidere(const Mat& src, const vector<Point>& B)
+{
+	return eroziune(dilatare(src, B), B);
+}
+
+Mat dilatareRepetata(const Mat& src, const vector<Point>& B, int iterations)
+{
+	Mat dst = src.clone();
+
+	for (int it = 0; it < iterations; it++)
+		dst = dilatare(dst, B);
+
+	return dst;
+}
+
 // -------------
 bool touchesImageBorder(const Rect& box, const Mat& img)
 {
@@ -503,9 +637,9 @@ double getWhiteRatioInBox(const Mat& hsv, const Rect& box)
 	Mat maskWhite;
 	inRange(roi, Scalar(0, 0, 120), Scalar(180, 160, 255), maskWhite);
 
-	Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
-	morphologyEx(maskWhite, maskWhite, MORPH_OPEN, kernel);
-	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernel);
+	vector<Point> kernel = getElementStructural(8);
+	maskWhite = deschidere(maskWhite, kernel);
+	maskWhite = inchidere(maskWhite, kernel);
 
 	int whitePixels = countNonZero(maskWhite);
 	int totalPixels = safeBox.width * safeBox.height;
@@ -529,9 +663,9 @@ double getRedRatioInBox(const Mat& hsv, const Rect& box)
 	inRange(roi, Scalar(170, 70, 70), Scalar(180, 255, 255), maskRed2);
 	bitwise_or(maskRed1, maskRed2, maskRed);
 
-	Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
-	morphologyEx(maskRed, maskRed, MORPH_OPEN, kernel);
-	morphologyEx(maskRed, maskRed, MORPH_CLOSE, kernel);
+	vector<Point> kernel = getElementStructural(8);
+	maskRed = deschidere(maskRed, kernel);
+	maskRed = inchidere(maskRed, kernel);
 
 	int redPixels = countNonZero(maskRed);
 	int totalPixels = safeBox.width * safeBox.height;
@@ -553,9 +687,9 @@ double getBlackRatioInBox(const Mat& hsv, const Rect& box)
 	Mat maskBlack;
 	inRange(roi, Scalar(0, 0, 0), Scalar(180, 255, 70), maskBlack);
 
-	Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
-	morphologyEx(maskBlack, maskBlack, MORPH_OPEN, kernel);
-	morphologyEx(maskBlack, maskBlack, MORPH_CLOSE, kernel);
+	vector<Point> kernel = getElementStructural(8);
+	maskBlack = deschidere(maskBlack, kernel);
+	maskBlack = inchidere(maskBlack, kernel);
 
 	int blackPixels = countNonZero(maskBlack);
 	int totalPixels = safeBox.width * safeBox.height;
@@ -579,12 +713,12 @@ bool hasDirectionalArrowInside(const Mat& hsv, const Rect& box)
 	Mat maskWhite;
 	inRange(roi, Scalar(0, 0, 150), Scalar(180, 130, 255), maskWhite);
 
-	Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
-	Mat kernelBig = getStructuringElement(MORPH_ELLIPSE, Size(5, 5));
+	vector<Point> kernel = getElementStructural(8);
+	vector<Point> kernelBig = getElementStructuralEllipse(5);
 
-	morphologyEx(maskWhite, maskWhite, MORPH_OPEN, kernel);
-	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernelBig);
-	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernelBig);
+	maskWhite = deschidere(maskWhite, kernel);
+	maskWhite = inchidere(maskWhite, kernelBig);
+	maskWhite = inchidere(maskWhite, kernelBig);
 
 	std::vector<std::vector<Point>> contours;
 	std::vector<Vec4i> hierarchy;
@@ -653,9 +787,9 @@ bool hasSingleWhiteArrowBlob(const Mat& hsv, const Rect& box)
 	Mat maskWhite;
 	inRange(roi, Scalar(0, 0, 160), Scalar(180, 110, 255), maskWhite);
 
-	Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
-	morphologyEx(maskWhite, maskWhite, MORPH_OPEN, kernel);
-	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernel);
+	vector<Point> kernel = getElementStructural(8);
+	maskWhite = deschidere(maskWhite, kernel);
+	maskWhite = inchidere(maskWhite, kernel);
 
 	std::vector<std::vector<Point>> contours;
 	std::vector<Vec4i> hierarchy;
@@ -734,9 +868,9 @@ bool hasWhiteHorizontalBar(const Mat& hsv, const Rect& box)
 	Mat maskWhite;
 	inRange(roi, Scalar(0, 0, 170), Scalar(180, 90, 255), maskWhite);
 
-	Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
-	morphologyEx(maskWhite, maskWhite, MORPH_OPEN, kernel);
-	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernel);
+	vector<Point> kernel = getElementStructural(8);
+	maskWhite = deschidere(maskWhite, kernel);
+	maskWhite = inchidere(maskWhite, kernel);
 
 	std::vector<std::vector<Point>> contours;
 	std::vector<Vec4i> hierarchy;
@@ -785,12 +919,12 @@ bool hasWhiteTriangleWithBlackDetails(const Mat& hsv, const Rect& box)
 	inRange(roi, Scalar(0, 0, 150), Scalar(180, 120, 255), maskWhite);
 
 	//inchidere mai puternica, ca sa umple golurile produse de pieton si zebra
-	Mat kernelBig = getStructuringElement(MORPH_ELLIPSE, Size(7, 7));
-	Mat kernelSmall = getStructuringElement(MORPH_RECT, Size(3, 3));
+	vector<Point> kernelBig = getElementStructuralEllipse(7);
+	vector<Point> kernelSmall = getElementStructural(8);
 
-	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernelBig);
-	morphologyEx(maskWhite, maskWhite, MORPH_CLOSE, kernelBig);
-	morphologyEx(maskWhite, maskWhite, MORPH_OPEN, kernelSmall);
+	maskWhite = inchidere(maskWhite, kernelBig);
+	maskWhite = inchidere(maskWhite, kernelBig);
+	maskWhite = deschidere(maskWhite, kernelSmall);
 
 	std::vector<std::vector<Point>> contours;
 	std::vector<Vec4i> hierarchy;
@@ -870,7 +1004,7 @@ bool hasWhiteTriangleWithBlackDetails(const Mat& hsv, const Rect& box)
 	//cautam negrul in interior
 	Mat maskBlack;
 	inRange(roi, Scalar(0, 0, 0), Scalar(180, 255, 90), maskBlack);
-	morphologyEx(maskBlack, maskBlack, MORPH_OPEN, kernelSmall);
+	maskBlack = deschidere(maskBlack, kernelSmall);
 
 	Mat blackInsideTriangle;
 	bitwise_and(maskBlack, triangleMask, blackInsideTriangle);
@@ -1086,7 +1220,7 @@ std::string recognizeTrafficSign(
 		colorName.c_str(), area, perimeter, box.x, box.y, box.width, box.height);
 
 	//Cedeaza trecerea
-	if ((corners == 3 || corners == 4) && colorName=="Rosu" && isLikelyYieldSign(hsv, box, area))
+	if ((corners == 3 || corners == 4) && colorName == "Rosu" && isLikelyYieldSign(hsv, box, area))
 		return "Cedeaza";
 
 	if ((colorName == "Rosu" || colorName == "Albastru") && (shapeName == "Cerc" || corners >= 6))
@@ -1139,7 +1273,7 @@ std::string recognizeTrafficSign(
 	if (shapeName == "Cerc" && colorName == "Albastru" && hasDirectionalArrowInside(hsv, box))
 		return "Obligatoriu inainte";
 
-	
+
 	return "Necunoscut";
 }
 
@@ -1275,18 +1409,18 @@ void testTrafficSignRecognition()
 		Mat maskYellow;
 		inRange(hsv, Scalar(15, 60, 60), Scalar(40, 255, 255), maskYellow);
 
-		Mat kernelSmall = getStructuringElement(MORPH_RECT, Size(3, 3));
-		Mat kernelBig = getStructuringElement(MORPH_RECT, Size(5, 5));
+		vector<Point> kernelSmall = getElementStructural(8);
+		vector<Point> kernelBig = getElementStructuralRect(5);
 
-		morphologyEx(maskRed, maskRed, MORPH_OPEN, kernelSmall);
-		morphologyEx(maskRed, maskRed, MORPH_CLOSE, kernelBig);
+		maskRed = deschidere(maskRed, kernelSmall);
+		maskRed = inchidere(maskRed, kernelBig);
 
-		morphologyEx(maskBlue, maskBlue, MORPH_OPEN, kernelSmall);
-		morphologyEx(maskBlue, maskBlue, MORPH_CLOSE, kernelBig);
-		dilate(maskBlue, maskBlue, kernelSmall, Point(-1, -1), 2);
+		maskBlue = deschidere(maskBlue, kernelSmall);
+		maskBlue = inchidere(maskBlue, kernelBig);
+		maskBlue = dilatareRepetata(maskBlue, kernelSmall, 2);
 
-		morphologyEx(maskYellow, maskYellow, MORPH_OPEN, kernelSmall);
-		morphologyEx(maskYellow, maskYellow, MORPH_CLOSE, kernelBig);
+		maskYellow = deschidere(maskYellow, kernelSmall);
+		maskYellow = inchidere(maskYellow, kernelBig);
 
 		Mat result = resized.clone();
 
